@@ -31,6 +31,16 @@ def timewatch(logger=None):
         return wrapper
     return _timewatch
 
+def print_colored(sentence, idx_colored, color='red'):
+  assert isinstance(sentence, list)
+  res = []
+  for i,s in enumerate(sentence):
+    if i in idx_colored:
+      res.append(colored(s, color))
+    else:
+      res.append(s)
+  print " ".join(res)
+
 def colored(str_, color):
   '''
   Args: colors: a str or list of it.
