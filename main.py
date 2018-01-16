@@ -1,7 +1,8 @@
 # coding:utf-8 
-import sys, re, argparse
+import sys, re, argparse, time
 import spacy #, sense2vec
 import utils
+from currency import get_currency_tokens
 
 #python -m spacy download en
 nlp = spacy.load('en_core_web_sm')
@@ -9,26 +10,29 @@ nlp = spacy.load('en_core_web_sm')
 # successes : L54, L200, L249
 # failures  : L90, L236, L271
 
-
 #########################################
-##    Functions for spacy object
+##    Functions for simple filtering
 #########################################
-
-def include_numeric(sentence):
-  NUM = "NUM"
-  assert isinstance(sentence, spacy.tokens.doc.Doc)
-  pos = [i for i, span in enumerate(sentence) if span.pos_ == NUM]
-  return pos
 
 def include_number(sentence):
   assert isinstance(sentence, spacy.tokens.doc.Doc)
   m = re.search(u'[0-9]', sentence.text)
   return True if m else False
 
-def print_pos(sentence):
+def include_numeric(sentence):
+  NUM = "NUM"
   assert isinstance(sentence, spacy.tokens.doc.Doc)
-  for s in sentence:
-    print s, s.pos_
+  #res = [i for i, span in enumerate(sentence) if span.pos_ == NUM]
+  res = [span for i, span in enumerate(sentence) if span.pos_ == NUM]
+  
+  return res
+
+def find_sharing_token(sentence, tokens, lemmatize=True):
+  assert isinstance(sentence, spacy.tokens.doc.Doc)
+  tokens_in_sent = set([t.lemma_ for t in sentence]) if lemmatize else set([t.text for t in sentence])
+  return tokens_in_sent.intersection(tokens)
+#########################################
+
 
 def extract_expression(sentence):
   assert isinstance(sentence, spacy.tokens.doc.Doc)
@@ -51,7 +55,6 @@ def extract_expression(sentence):
       [u'ADV', u'SYM', u'NUM'], # only $24.95
       [u'ADV', u'SYM', u'NUM', u'ADJ'], # only $5.00 more
       [u'SYM', u'NUM', u'CCONJ', u'ADP', u'NOUN'], # 100,000+ per year
-      [u'PUNCT', u'SYM', u'NUM', u'PUNCT'], # - $75 -
       [u'SYM', u'NUM', u'DET'], # $5.00 each
       [u'ADV', u'ADV', u'SYM', u'NUM'] # at least $20
     ]
@@ -64,42 +67,86 @@ def extract_expression(sentence):
           idx_expression.append([j for j in xrange(i, i+len(pos_pattern))])
     return idx_expression
 
+  def pos_regexp_based(sentence):
+    idx_expression = []
+    return idx_expression
+
   extract_f = pos_pattern_based
   return extract_f(sentence)
 
-@utils.timewatch()
-def extract(input_texts, output_file=None):
-  ins_count = 0
-  num_numeric = 0
-  num_no_number = 0
 
-  res = []
-  showed_list = []
+@utils.timewatch()
+def extract_sentences(input_texts):
+  results = []
+  currencies = get_currency_tokens(lemmatize=args.lemmatize)
+
+  # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
+  synonyms = set([
+    'amount', 'bill', 'cost', 'demand', 'discount', 'estimate', 'expenditure', 'expense', 'fare', 'fee', 'figure', 'output', 'pay', 'payment', 'premium', 'rate', 'return', 'tariff', 'valuation', 'worth', 'appraisal', 'assessment', 'barter', 'bounty', 'ceiling', 'charge', 'compensation', 'consideration', 'damage', 'disbursement', 'dues', 'exaction', 'hire', 'outlay', 'prize', 'quotation', 'ransom', 'reckoning', 'retail', 'reward', 'score', 'sticker', 'tab', 'ticket', 'toll', 'tune', 'wages', 'wholesale', 'appraisement', 
+    #'asking price', 'face value',  # MWEs are ignored for now.
+  ])
+  t0, t1, t2, t3, t4 = 0,0,0,0,0
+  t_all = time.time()
   for i, line in enumerate(input_texts):
+    if i > args.max_lines:
+      break
+
     if not line:
       continue
+    t = time.time()
     doc = nlp(line)
-    idx_numeric = include_numeric(doc)
-    if not idx_numeric:
-      continue
-    num_numeric += 1
-    res.append(doc)
-    if not include_number(doc):
-      num_no_number += 1
+    t0 += time.time() - t
 
-    idx_expression = extract_expression(doc)
-    if idx_expression and idx_expression not in showed_list:
-      print "<L%d>\t" % i
-      flattened_indice = list(set(utils.flatten(idx_expression)))
-      print 'Original sentence:\t',
-      utils.print_colored([t.text for t in doc], flattened_indice, 'red')
-      print 'POS list         :\t',
-      utils.print_colored([t.pos_ for t in doc], flattened_indice, 'blue')
-      print 'Expressions      :\t',
-      print [" ".join([doc[i].text for i in indices]) for indices in idx_expression]
-      showed_list.append(idx_expression)
-      ins_count += 1
+    t = time.time()
+    res_numeric = include_numeric(doc)
+    t1 += time.time() - t
+
+    t = time.time()
+    if not res_numeric:
+      continue
+    res_currency = find_sharing_token(doc, currencies, lemmatize=args.lemmatize)
+    t2 += time.time() - t
+
+    t = time.time()
+    res_synonyms = find_sharing_token(doc, synonyms, lemmatize=True)
+    t3 += time.time() - t
+
+    if not (res_synonyms or res_currency):
+      continue
+    print "<L%d>\t%s" % (i, line)
+    print res_currency.union(res_synonyms).union(set(res_numeric))
+    results.append(line)
+
+  t_all = time.time() - t_all
+  print ""
+  print "<Time spent>"
+  print "Total", t_all
+  print "Creating Spacy", t0
+  print "Numeric", t1
+  print "Synonyms", t2
+  print "Currency", t3
+  return results
+
+
+@utils.timewatch()
+def extract(input_texts): # Deprecated
+  # Codes for expression extraction (this is to be done after clustering?)
+  ins_count = 0
+  showed_list = []
+  idx_expression = extract_expression(doc)
+  if idx_expression and idx_expression not in showed_list:
+    print "<L%d>\t" % i
+    flattened_indice = list(set(utils.flatten(idx_expression)))
+    print 'Original sentence:\t',
+    utils.print_colored([t.text for t in doc], flattened_indice, 'red')
+    print 'POS list         :\t',
+    utils.print_colored([t.pos_ for t in doc], flattened_indice, 'blue')
+    print 'Expressions      :\t',
+    print [(" ".join([doc[i].text for i in indices]), indices[0], indices[-1]) for indices in idx_expression]
+    showed_list.append(idx_expression)
+    ins_count += 1
   return ins_count
+
 
 
 @utils.timewatch()
@@ -119,28 +166,65 @@ def preprocess(input_texts, restrictions=[lambda x: True if x else False]):
   res = [l.strip() for l in re.sub('[ \t]+', " ", input_texts).split('\n')]
   return [l for l in res if apply_restriction(l, restrictions)]
 
-def debug():
-  pass
 
+def print_pos_lemma(doc):
+  if not isinstance(doc, spacy.tokens.doc.Doc):
+    doc = nlp(doc)
+  for t in doc:
+    print t, t.pos_, t.lemma_
+  print ""
+  return
+
+def debug():
+  # Occasionally Spacy fails to parse unicode token.
+  text = u'This costs at least ￥1,000' 
+  print_pos_lemma(text)
+  """
+  This DET this
+  costs VERB cost
+  at ADV at
+  least ADJ least
+  ￥1,000 ADJ ￥1,000
+  """
+
+  text = u'This costs at least $1,000' 
+  """
+  This DET this
+  costs VERB cost
+  at ADV at
+  least ADV least
+  $ SYM $
+  1,000 NUM 1,000
+  """
+  print_pos_lemma(text)
+
+
+@utils.timewatch()
 def main(args):
+  #debug()
   input_file = args.input_file
   with open(input_file, "r",) as ifile:
     input_texts = ifile.read().decode('utf-8')
 
     # Reduce the number of candidate sentences by simple regexps.
     include_no_noisy_tokens = lambda x: True if not re.search("[;=]", x) else False
-    include_number_f = lambda x: True if re.search("[0-9.,]+[0-9]", x) else False
-    include_dollar_f = lambda x: True if re.search("\$[0-9.,]+[0-9]", x) else False
-    #restrictions = [include_no_noisy_tokens, include_number_f]
+    include_number_f = lambda x: True if re.search("[0-9.,]+[0-9]", x, re.I) else False
+    include_dollar_f = lambda x: True if re.search("\$[0-9.,]+[0-9]", x, re.I) else False
+
     restrictions = [include_no_noisy_tokens]
     input_texts = preprocess(input_texts, restrictions=restrictions)
-    ins_count = extract(input_texts)
-    print("Number of entries: {}".format(ins_count))
+    res = extract_sentences(input_texts)
+    print("Number of entries: {}".format(len(res)))
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("-i", "--input_file", default="small.txt",
                       type=str, help="")
+  parser.add_argument("-l", "--lemmatize", default=True,
+                      type=utils.str2bool, help="")
+  parser.add_argument("-m", "--max_lines", default=30000,
+                      type=int, help="")
   #parser.add_argument("-o", "--output_file", default="results.txt", 
   #                    type=str, help="")
   args  = parser.parse_args()

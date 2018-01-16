@@ -2,6 +2,11 @@ import time
 from itertools import chain
 from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, INFO, WARNING, ERROR, CRITICAL
 
+def str2bool(v):
+  if type(v) == bool:
+    return v
+  return v.lower() in ("yes", "true", "t", "1")
+
 def flatten(l):
   return list(chain.from_iterable(l))
 
