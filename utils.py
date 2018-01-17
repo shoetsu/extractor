@@ -1,6 +1,10 @@
-import time
+import time, random
 from itertools import chain
 from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+def random_string(length, seq='0123456789abcdefghijklmnopqrstuvwxyz'):
+    sr = random.SystemRandom()
+    return ''.join([sr.choice(seq) for i in xrange(length)])
 
 def str2bool(v):
   if type(v) == bool:

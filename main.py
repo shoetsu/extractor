@@ -1,5 +1,5 @@
 # coding:utf-8 
-import sys, re, argparse, time, commands
+import sys, re, argparse, time, commands, os
 import spacy #, sense2vec
 import utils
 from nltk.stem import WordNetLemmatizer
@@ -20,15 +20,13 @@ stanford_tagger = StanfordPOSTagger(
   TAGGER_DIR + '/stanford-postagger.jar'
 )
 
-
-# successes : L54, L200, L249
-# failures  : L90, L236, L271
+NUM = "__NUM__"
+TMP_DIR = '/tmp/extractor_tmp'
+logger = utils.logManager()
 
 #########################################
 ##    Functions for simple filtering
 #########################################
-
-
 def extract_expression(sentence):
   assert isinstance(sentence, spacy.tokens.doc.Doc)
 
@@ -78,24 +76,48 @@ def extract_expression(sentence):
 #   res = [span for i, span in enumerate(sentence) if span.pos_ == NUM]
 #   return res
 
-def include_numeric_manually(sentence):
-  numeric_patterns = [
-    '[0-9.,]*[0-9]',
-    'one','two','three','four', 'five', 'six', 'seven'
-  ]
-  return sentence
+# def include_numeric_manually(sentence):
+#   numeric_patterns = [
+#     '[0-9.,]*[0-9]',
+#     'one','two','three','four', 'five', 'six', 'seven'
+#   ]
+#   return sentence
 
 def include_numeric(sentence):
   res = [tok for tok, pos in stanford_tagger.tag(sentence) if pos == u'CD']
   return res
+
+def find_sents_with_numerics(tokenized_sentences):
+  if not os.path.exists(TMP_DIR):
+    os.makedirs(TMP_DIR)
+  tmp_filename = utils.random_string(5)
+  tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
+  with open(tmp_filepath, 'w') as f:
+    for l in tokenized_sentences:
+      line = ' '.join(l) + '\n'
+      assert unicode not in line.split(' ')
+      #f.write(line.encode('utf-8'))
+      f.write(line)
+  script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stanford-postagger.sh')
+  logger.info('Running POS analysis to %d sentences...' % len(tokenized_sentences))
+  cmd = "%s %s" % (script_path, tmp_filepath) 
+  os.system(cmd)
+  logger.info('The results of POS tagging is written in \'%s\'' % (tmp_filepath + '.tagged'))
   
+  pos_tags = commands.getoutput('cut -f2 %s' % (tmp_filepath + '.tagged')).split('\n\n')
+  res = [True if 'CD' in t.split('\n') else False for t in pos_tags]
+  #os.system('rm %s' % tmp_filepath)
+  #os.system('rm %s' % tmp_filepath + '.tagged')
+  return tmp_filepath, res
+
 
 def extract_sentences(input_texts):
-  results = []
+  candidates = []
+  tokenized_candidates = []
   synonyms = set([
     'amount', 'bill', 'cost', 'demand', 'discount', 'estimate', 'expenditure', 'expense', 'fare', 'fee', 'figure', 'output', 'pay', 'payment', 'premium', 'rate', 'return', 'tariff', 'valuation', 'worth', 'appraisal', 'assessment', 'barter', 'bounty', 'ceiling', 'charge', 'compensation', 'consideration', 'damage', 'disbursement', 'dues', 'exaction', 'hire', 'outlay', 'prize', 'quotation', 'ransom', 'reckoning', 'retail', 'reward', 'score', 'sticker', 'tab', 'ticket', 'toll', 'tune', 'wages', 'wholesale', 'appraisement', 
   ])
-  currency_symbols, currency_names = get_currency_tokens(lemmatize=args.lemmatize)
+  currency_symbols, currency_names = get_currency_tokens()
   currency_symbols = [c.replace('$', '\$') for c in currency_symbols] # for regexp
 
   def find_shared_token(s1, s2):
@@ -114,15 +136,17 @@ def extract_sentences(input_texts):
 
   # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
   t_lemmatize, t_currency, t_synonym, t_spacy, t_numeric = 0,0,0,0,0
-
+  logger.info("Filtering sentences by whether they contain synonyms of 'price' (charge, cost), currency units (dollar, franc), or currency symbols($, ₣)...")
   t_all = time.time()
   for i, line in enumerate(input_texts):
+    if i and i % 100000 == 0:
+      logger.info('Done %d/%d ... (%f sec per a line )\n' % (i, len(input_texts), (time.time() - t_all)/i ))
+    line = line.encode('ascii', 'ignore')
     if not line:
       continue
     t = time.time()
     tokenized_text = [token.lower() for token in word_tokenize(line)]
     t_tokenize = time.time() - t
-
     t = time.time()
     lemmatized_text = [wnl.lemmatize(token) for token in tokenized_text]
     t_lemmatize += time.time() - t
@@ -147,25 +171,30 @@ def extract_sentences(input_texts):
 
     t = time.time()
     
+    ## Changed: as calling POS tagger every time this processes a new line can be very costful, this creates a temporary file of possible sentences and they are collectively processed with POS tagger.
     #res_numeric = include_numeric(doc)
-    res_numeric = include_numeric(tokenized_text)
+    #res_numeric = include_numeric(tokenized_text)
     #res_numeric = include_numeric_manually(tokenized_text)
-    if not res_numeric:
-      continue
-    t_numeric += time.time() - t
+    #if not res_numeric:
+    #  continue
+    #t_numeric += time.time() - t
+    candidates.append(line)
+    tokenized_candidates.append(tokenized_text)
 
-    print "<L%d/%d>\t%s" % (i, len(input_texts),line)
-    print ", ".join(set(res_currency).union(set(res_synonym)).union(set(res_numeric)))
-    results.append(line)
+  t = time.time()
+  _, contains_numeric = find_sents_with_numerics(tokenized_candidates)
+  print len(contains_numeric), len(tokenized_candidates)
+  assert len(contains_numeric) == len(tokenized_candidates)
+  candidates = [s for x, s in zip(contains_numeric, candidates) if x]
+  tokenized_candidates = [" ".join(s) for x, s in zip(contains_numeric, tokenized_candidates) if x]
+  t_numeric += time.time() - t
 
-    # DEBUG
-    if i == 17022 or False:
-      print 'synonym', res_synonym
-      print 'currency',res_currency
-      print 'numeric',res_numeric
-      exit(1)
+  #results = set([re.sub("[0-9.,]*[0-9]", NUM, sent) for sent in tokenized_candidates])
+  #results = set([re.sub("[0-9.,]*[0-9]", NUM, sent) for sent in candidates])
+  results = candidates
 
   t_all = time.time() - t_all
+  sys.stdout = sys.stderr
   print ""
   print "<Time spent>"
   print "Total: %f  (%f per a sent)" % (t_all, t_all / i)
@@ -175,6 +204,8 @@ def extract_sentences(input_texts):
   print "Currency: %.1f %%" % (t_currency / t_all * 100)
   #print "Creating Spacy: %.1f %%" % (t_spacy / t_all * 100)
   print "Numeric: %.1f %%" % (t_numeric / t_all * 100)
+  sys.stdout = sys.__stdout__
+  
   return results
 
 
@@ -264,33 +295,47 @@ def debug():
 @utils.timewatch()
 def main(args):
   input_file = args.input_file
+
   with open(input_file, "r",) as ifile:
     input_texts = ifile.read().decode('utf-8')
     if args.max_lines:
       input_texts = input_texts[:args.max_lines]
 
     # Reduce the number of candidate sentences by simple regexps.
-    include_no_noisy_tokens = lambda x: True if not re.search("[\(\){};=]", x) else False # for some reason, the stanford parser judges parentheses as numerical values
-    include_number_f = lambda x: True if re.search("[0-9.,]+[0-9]", x, re.I) else False
-    include_dollar_f = lambda x: True if re.search("\$[0-9.,]+[0-9]", x, re.I) else False
+    include_no_noisy_tokens = lambda x: True if not re.search("[{};=\|]", x) else False # for some reason, the stanford parser judges parentheses as numerical values
+    include_number_f = lambda x: True if re.search("[0-9.,]*[0-9]", x, re.I) else False
+    include_dollar_f = lambda x: True if re.search("\$[0-9.,]*[0-9]", x, re.I) else False
 
     restrictions = [include_no_noisy_tokens]
     n_original = len(input_texts)
-    input_texts = preprocess(input_texts, restrictions=restrictions)
-    n_preprocess = len(input_texts)
-    res = extract_sentences(input_texts)
-    print("Number of lines in original data: {}".format(n_original))
-    print("Number of lines after preprocessing: {}".format(n_preprocess))
-    print("Number of entries: {}".format(len(res)))
+    if not(args.tmp_file):
+      input_texts = preprocess(input_texts, restrictions=restrictions)
+      n_preprocess = len(input_texts)
+      results = extract_sentences(input_texts)
+      logger.info("Number of lines in original data: {}\n".format(n_original))
+      logger.info("Number of lines after preprocessing: {}\n".format(n_preprocess))
+
+  if args.tmp_file:
+    def load_from_tagged_tmpfile(tmp_file):
+      logger.info("Continue extraction using \'%s.tagged\'." % tmp_file )
+      tmp_filepath = os.path.join(TMP_DIR, tmp_file)
+      words = commands.getoutput('cut -f1 %s' % (tmp_filepath + '.tagged')).split('\n\n')
+      pos_tags = commands.getoutput('cut -f2 %s' % (tmp_filepath + '.tagged')).split('\n\n')
+      return [" ".join(w.split('\n')) for w, t in zip(words, pos_tags) if "CD" in t.split('\n')]
+
+    results = load_from_tagged_tmpfile(args.tmp_file)
+  logger.info("Number of entries: {}\n".format(len(results)))
+  print "\n".join(results)
 
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("-i", "--input_file", default="small.txt",
                       type=str, help="")
-  parser.add_argument("-l", "--lemmatize", default=True,
-                      type=utils.str2bool, help="")
   parser.add_argument("-m", "--max_lines", default=0,
                       type=int, help="")
+  parser.add_argument("-t", "--tmp_file", default=None,
+                      type=str, help="")
+
   args  = parser.parse_args()
   main(args)

@@ -174,7 +174,7 @@ CURRENCY_SYMBOLS = [get_currency_symbol(c[0], locale="en.US") for c in CURRENCY_
 CURRENCY_NAMES = [get_currency_name(c[0], locale="en.US") for c in CURRENCY_CODES]
 
 
-def get_currency_tokens(lemmatize=True, use_currency_name=True):
+def get_currency_tokens(use_currency_name=True):
   currency_symbols = [t for t in CURRENCY_SYMBOLS if not re.search("[A-Za-z]", t)] # '$, ₣, ...'
 
   # Pick up only the units of currency. (dollar, franc, ...)
@@ -187,21 +187,14 @@ def get_currency_tokens(lemmatize=True, use_currency_name=True):
   # TODO: if lemmatized, irrelevant words can be included (e.g. 'all', 'imp', 'rand')
   currency_symbols = list(set(currency_symbols))
   currency_names = list(set(currency_names))
-  removal_names = ['real', 'rights', 'mark'] # Currency names with the same spelling as common words
-
+  removal_names = ['real', 'rights', 'mark', 'won'] # Currency names with the same spelling as common words are removed.
+  
   for c in removal_names:
     currency_names.remove(c)
+
+  plurals = [c + 's' for c in currency_names] # I don't know whether all currency units have a plural form....
+  currency_names += plurals
   return set(currency_symbols), set(currency_names)
-  # if lemmatize:
-  #   import spacy
-  #   nlp = spacy.load('en_core_web_sm')
-  #   currency_tokens = set([t.lemma_ for t in nlp(" ".join(currency_symbols + currency_names))])
-  # else:
-  #   currency_tokens = set(currency_symbols + currency_names)
-
-  # currency_tokens = list(set([t for t in currency_tokens if len(t) > 1 or not re.match("[A-Za-z]", t)]))
-  # return currency_tokens
-
 
 if __name__ == '__main__':
   symbols, names = get_currency_tokens()
