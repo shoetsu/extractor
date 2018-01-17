@@ -184,7 +184,7 @@ def get_currency_tokens(use_currency_name=True):
     #currency_names = ['Dollar', 'Euro', 'Yen', 'Franc', 'Pound', 'Won']
     currency_names = [n.split()[-1].lower() for n in CURRENCY_NAMES if not re.search("[0-9\(\)]", n)]
 
-  # TODO: if lemmatized, irrelevant words can be included (e.g. 'all', 'imp', 'rand')
+  # TODO: if they are lemmatized and converted to lower case, irrelevant words can be contained (e.g. 'all', 'imp', 'rand')
   currency_symbols = list(set(currency_symbols))
   currency_names = list(set(currency_names))
   removal_names = ['real', 'rights', 'mark', 'won'] # Currency names with the same spelling as common words are removed.

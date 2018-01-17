@@ -87,23 +87,28 @@ def include_numeric(sentence):
   res = [tok for tok, pos in stanford_tagger.tag(sentence) if pos == u'CD']
   return res
 
-def find_sents_with_numerics(tokenized_sentences):
+def find_sents_with_numerics(tokenized_sentences, tmp_filename=None):
   if not os.path.exists(TMP_DIR):
     os.makedirs(TMP_DIR)
-  tmp_filename = utils.random_string(5)
-  tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
-  with open(tmp_filepath, 'w') as f:
-    for l in tokenized_sentences:
-      line = ' '.join(l) + '\n'
-      assert unicode not in line.split(' ')
-      #f.write(line.encode('utf-8'))
-      f.write(line)
-  script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stanford-postagger.sh')
-  logger.info('Running POS analysis to %d sentences...' % len(tokenized_sentences))
-  cmd = "%s %s" % (script_path, tmp_filepath) 
-  os.system(cmd)
-  logger.info('The results of POS tagging is written in \'%s\'' % (tmp_filepath + '.tagged'))
-  
+  if tmp_filename:
+    tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
+  else:
+    tmp_filename = utils.random_string(5)
+    tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
+    with open(tmp_filepath, 'w') as f:
+      for l in tokenized_sentences:
+        line = ' '.join(l) + '\n'
+        assert unicode not in line.split(' ')
+        f.write(line)
+
+  if not os.path.exists(tmp_filepath + '.tagged'):
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stanford-postagger.sh')
+    logger.info('Running POS analysis to %d sentences...' % len(tokenized_sentences))
+    cmd = "%s %s" % (script_path, tmp_filepath) 
+    os.system(cmd)
+
+    logger.info('The results of POS tagging is written in \'%s\'' % (tmp_filepath + '.tagged'))
+
   pos_tags = commands.getoutput('cut -f2 %s' % (tmp_filepath + '.tagged')).split('\n\n')
   res = [True if 'CD' in t.split('\n') else False for t in pos_tags]
   #os.system('rm %s' % tmp_filepath)
@@ -111,7 +116,7 @@ def find_sents_with_numerics(tokenized_sentences):
   return tmp_filepath, res
 
 
-def extract_sentences(input_texts):
+def extract_sentences(input_texts, tmp_filename=None):
   candidates = []
   tokenized_candidates = []
   synonyms = set([
@@ -139,8 +144,10 @@ def extract_sentences(input_texts):
   logger.info("Filtering sentences by whether they contain synonyms of 'price' (charge, cost), currency units (dollar, franc), or currency symbols($, ₣)...")
   t_all = time.time()
   for i, line in enumerate(input_texts):
+    if tmp_filename and os.path.exists(tmp_filename):
+      break
     if i and i % 100000 == 0:
-      logger.info('Done %d/%d ... (%f sec per a line )\n' % (i, len(input_texts), (time.time() - t_all)/i ))
+      logger.info('Done %d/%d ... (%f sec per a line )' % (i, len(input_texts), (time.time() - t_all)/i ))
     line = line.encode('ascii', 'ignore')
     if not line:
       continue
@@ -181,8 +188,11 @@ def extract_sentences(input_texts):
     candidates.append(line)
     tokenized_candidates.append(tokenized_text)
 
+  if tmp_filename:
+    
+
   t = time.time()
-  _, contains_numeric = find_sents_with_numerics(tokenized_candidates)
+  _, contains_numeric = find_sents_with_numerics(tokenized_candidates, tmp_filename)
   print len(contains_numeric), len(tokenized_candidates)
   assert len(contains_numeric) == len(tokenized_candidates)
   candidates = [s for x, s in zip(contains_numeric, candidates) if x]
@@ -311,20 +321,10 @@ def main(args):
     if not(args.tmp_file):
       input_texts = preprocess(input_texts, restrictions=restrictions)
       n_preprocess = len(input_texts)
-      results = extract_sentences(input_texts)
-      logger.info("Number of lines in original data: {}\n".format(n_original))
-      logger.info("Number of lines after preprocessing: {}\n".format(n_preprocess))
-
-  if args.tmp_file:
-    def load_from_tagged_tmpfile(tmp_file):
-      logger.info("Continue extraction using \'%s.tagged\'." % tmp_file )
-      tmp_filepath = os.path.join(TMP_DIR, tmp_file)
-      words = commands.getoutput('cut -f1 %s' % (tmp_filepath + '.tagged')).split('\n\n')
-      pos_tags = commands.getoutput('cut -f2 %s' % (tmp_filepath + '.tagged')).split('\n\n')
-      return [" ".join(w.split('\n')) for w, t in zip(words, pos_tags) if "CD" in t.split('\n')]
-
-    results = load_from_tagged_tmpfile(args.tmp_file)
-  logger.info("Number of entries: {}\n".format(len(results)))
+      results = extract_sentences(input_texts, args.tmp_file)
+      logger.info("Number of lines in original data: {}".format(n_original))
+      logger.info("Number of lines after preprocessing: {}".format(n_preprocess))
+  logger.info("Number of entries: {}".format(len(results)))
   print "\n".join(results)
 
 
