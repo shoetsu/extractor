@@ -174,24 +174,39 @@ CURRENCY_SYMBOLS = [get_currency_symbol(c[0], locale="en.US") for c in CURRENCY_
 CURRENCY_NAMES = [get_currency_name(c[0], locale="en.US") for c in CURRENCY_CODES]
 
 
-def get_currency_tokens(lemmatize=True, use_currency_name=False):
-  currency_symbols = CURRENCY_SYMBOLS # '$, ₣, ...'
+def get_currency_tokens(lemmatize=True, use_currency_name=True):
+  currency_symbols = [t for t in CURRENCY_SYMBOLS if not re.search("[A-Za-z]", t)] # '$, ₣, ...'
+
   # Pick up only the units of currency. (dollar, franc, ...)
   currency_names = []
   if use_currency_name:
-    currency_names = [n.split()[-1] for n in CURRENCY_NAMES] 
+    # List up major currency names for now.
+    #currency_names = ['Dollar', 'Euro', 'Yen', 'Franc', 'Pound', 'Won']
+    currency_names = [n.split()[-1].lower() for n in CURRENCY_NAMES if not re.search("[0-9\(\)]", n)]
 
-  # TODO: if lemmatized, irrelevant words can be included (e.g. 'all', 'p', 'rand')
-  if lemmatize:
-    import spacy
-    nlp = spacy.load('en_core_web_sm')
-    currency_tokens = set([t.lemma_ for t in nlp(" ".join(currency_symbols + currency_names))])
-  else:
-    currency_tokens = set(currency_symbols + currency_names)
+  # TODO: if lemmatized, irrelevant words can be included (e.g. 'all', 'imp', 'rand')
+  currency_symbols = list(set(currency_symbols))
+  currency_names = list(set(currency_names))
+  removal_names = ['real', 'rights', 'mark'] # Currency names with the same spelling as common words
 
-  currency_tokens = set([t for t in currency_tokens if len(t) > 1 or not re.match("[A-Za-z]", t)])
-  return currency_tokens
+  for c in removal_names:
+    currency_names.remove(c)
+  return set(currency_symbols), set(currency_names)
+  # if lemmatize:
+  #   import spacy
+  #   nlp = spacy.load('en_core_web_sm')
+  #   currency_tokens = set([t.lemma_ for t in nlp(" ".join(currency_symbols + currency_names))])
+  # else:
+  #   currency_tokens = set(currency_symbols + currency_names)
 
-print CURRENCY_SYMBOLS
-print CURRENCY_NAMES
-#exit(1)
+  # currency_tokens = list(set([t for t in currency_tokens if len(t) > 1 or not re.match("[A-Za-z]", t)]))
+  # return currency_tokens
+
+
+if __name__ == '__main__':
+  symbols, names = get_currency_tokens()
+  print ', '.join(symbols)
+  print ', '.join(names)
+
+  #₡, £, ¥, $, ₦, ₩, ₫, ₪, ₭, €, ₮, ₱, ₲, ₴, ₹, ₸, ₺, ₽, ฿, ₾, ៛, ৳
+  #ariary, birr, yen, dollar, lilangeni, byn, imp, hryvnia, dalasi, lira, paʻanga, real, koruna, kwanza, sol, rufiyaa, ouguiya, rights, manat, naira, vatu, zloty, tvd, riel, kwacha, ringgit, kyat, cedi, loti, won, afghani, lari, balboa, tugrik, franc, ggp, forint, baht, lek, leu, lev, metical, kuna, bolívar, rand, som, denar, króna, escudo, dong, jep, nakfa, shilling, mark, dirham, sheqel, krona, krone, ruble, somoni, córdoba, ngultrum, kina, boliviano, pula, riyal, peso, pataca, pound, spl, tenge, florin, gourde, colón, taka, rupiah, rial, kip, dram, yuan, euro, quetzal, guarani, guilder, rupee, dinar, lempira, tala, dobra, leone

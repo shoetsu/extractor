@@ -1,36 +1,31 @@
 # coding:utf-8 
-import sys, re, argparse, time
+import sys, re, argparse, time, commands
 import spacy #, sense2vec
 import utils
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import word_tokenize
 from currency import get_currency_tokens
+from nltk.tag.perceptron import PerceptronTagger
+from nltk.tag.stanford import StanfordPOSTagger
+#from nltk.tag.stanford import CoreNLPPOSTagger as StanfordPOSTagger
 
 #python -m spacy download en
 nlp = spacy.load('en_core_web_sm')
+wnl = WordNetLemmatizer()
+nltk_tagger = PerceptronTagger()
+
+TAGGER_DIR = '/home/shoetsu/downloads/stanford-postagger'
+stanford_tagger = StanfordPOSTagger(
+  TAGGER_DIR + '/models/english-left3words-distsim.tagger',
+  TAGGER_DIR + '/stanford-postagger.jar'
+)
+
 
 # successes : L54, L200, L249
 # failures  : L90, L236, L271
 
 #########################################
 ##    Functions for simple filtering
-#########################################
-
-def include_number(sentence):
-  assert isinstance(sentence, spacy.tokens.doc.Doc)
-  m = re.search(u'[0-9]', sentence.text)
-  return True if m else False
-
-def include_numeric(sentence):
-  NUM = "NUM"
-  assert isinstance(sentence, spacy.tokens.doc.Doc)
-  #res = [i for i, span in enumerate(sentence) if span.pos_ == NUM]
-  res = [span for i, span in enumerate(sentence) if span.pos_ == NUM]
-  
-  return res
-
-def find_sharing_token(sentence, tokens, lemmatize=True):
-  assert isinstance(sentence, spacy.tokens.doc.Doc)
-  tokens_in_sent = set([t.lemma_ for t in sentence]) if lemmatize else set([t.text for t in sentence])
-  return tokens_in_sent.intersection(tokens)
 #########################################
 
 
@@ -75,57 +70,113 @@ def extract_expression(sentence):
   return extract_f(sentence)
 
 
-@utils.timewatch()
+
+# def include_numeric_spacy(sentence): # Stop using Spacy due to its slowness.
+#   NUM = "NUM"
+#   assert isinstance(sentence, spacy.tokens.doc.Doc)
+#   #res = [i for i, span in enumerate(sentence) if span.pos_ == NUM]
+#   res = [span for i, span in enumerate(sentence) if span.pos_ == NUM]
+#   return res
+
+def include_numeric_manually(sentence):
+  numeric_patterns = [
+    '[0-9.,]*[0-9]',
+    'one','two','three','four', 'five', 'six', 'seven'
+  ]
+  return sentence
+
+def include_numeric(sentence):
+  res = [tok for tok, pos in stanford_tagger.tag(sentence) if pos == u'CD']
+  return res
+  
+
 def extract_sentences(input_texts):
   results = []
-  currencies = get_currency_tokens(lemmatize=args.lemmatize)
-
-  # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
   synonyms = set([
     'amount', 'bill', 'cost', 'demand', 'discount', 'estimate', 'expenditure', 'expense', 'fare', 'fee', 'figure', 'output', 'pay', 'payment', 'premium', 'rate', 'return', 'tariff', 'valuation', 'worth', 'appraisal', 'assessment', 'barter', 'bounty', 'ceiling', 'charge', 'compensation', 'consideration', 'damage', 'disbursement', 'dues', 'exaction', 'hire', 'outlay', 'prize', 'quotation', 'ransom', 'reckoning', 'retail', 'reward', 'score', 'sticker', 'tab', 'ticket', 'toll', 'tune', 'wages', 'wholesale', 'appraisement', 
-    #'asking price', 'face value',  # MWEs are ignored for now.
   ])
-  t0, t1, t2, t3, t4 = 0,0,0,0,0
+  currency_symbols, currency_names = get_currency_tokens(lemmatize=args.lemmatize)
+  currency_symbols = [c.replace('$', '\$') for c in currency_symbols] # for regexp
+
+  def find_shared_token(s1, s2):
+    s1 = set(s1)
+    s2 = set(s2)
+    return s1.intersection(s2)
+
+  def find_shared_pattern(sentence, exprs):
+    res = []
+    sentence = " ".join(sentence)
+    for expr in exprs:
+      m = re.search(expr, sentence)
+      if m:
+        res.append(m.group(0))
+    return res
+
+  # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
+  t_lemmatize, t_currency, t_synonym, t_spacy, t_numeric = 0,0,0,0,0
+
   t_all = time.time()
   for i, line in enumerate(input_texts):
-    if i > args.max_lines:
-      break
-
     if not line:
       continue
     t = time.time()
-    doc = nlp(line)
-    t0 += time.time() - t
+    tokenized_text = [token.lower() for token in word_tokenize(line)]
+    t_tokenize = time.time() - t
 
     t = time.time()
-    res_numeric = include_numeric(doc)
-    t1 += time.time() - t
+    lemmatized_text = [wnl.lemmatize(token) for token in tokenized_text]
+    t_lemmatize += time.time() - t
+
+    # Filter sentences by whether they contain synonyms of 'price' (charge, cost), currency units (dollar, franc), or currency symbols($, ₣).
+    t = time.time()
+    res_synonym = find_shared_token(lemmatized_text, synonyms)
+    t_synonym += time.time() - t
 
     t = time.time()
+    res_currency1 = find_shared_token(lemmatized_text, currency_names)
+    res_currency2 = find_shared_pattern(lemmatized_text, currency_symbols)
+    res_currency = set(res_currency1).union(set(res_currency2))
+    t_currency += time.time() - t
+
+    if not (res_synonym or res_currency):
+      continue
+
+    # t = time.time()
+    # doc = nlp(line)
+    # t_spacy += time.time() - t
+
+    t = time.time()
+    
+    #res_numeric = include_numeric(doc)
+    res_numeric = include_numeric(tokenized_text)
+    #res_numeric = include_numeric_manually(tokenized_text)
     if not res_numeric:
       continue
-    res_currency = find_sharing_token(doc, currencies, lemmatize=args.lemmatize)
-    t2 += time.time() - t
+    t_numeric += time.time() - t
 
-    t = time.time()
-    res_synonyms = find_sharing_token(doc, synonyms, lemmatize=True)
-    t3 += time.time() - t
-
-    if not (res_synonyms or res_currency):
-      continue
-    print "<L%d>\t%s" % (i, line)
-    print res_currency.union(res_synonyms).union(set(res_numeric))
+    print "<L%d/%d>\t%s" % (i, len(input_texts),line)
+    print ", ".join(set(res_currency).union(set(res_synonym)).union(set(res_numeric)))
     results.append(line)
+
+    # DEBUG
+    if i == 17022 or False:
+      print 'synonym', res_synonym
+      print 'currency',res_currency
+      print 'numeric',res_numeric
+      exit(1)
 
   t_all = time.time() - t_all
   print ""
   print "<Time spent>"
-  print "Total", t_all
-  print "Creating Spacy", t0
-  print "Numeric", t1
-  print "Synonyms", t2
-  print "Currency", t3
+  print "Total: %f  (%f per a sent)" % (t_all, t_all / i)
+  print "Tokenize: %.1f %%" % (t_tokenize / t_all * 100)
+  print "Lemmatize: %.1f %%" % (t_lemmatize / t_all * 100)
+  print "Synonyms: %.1f %%" % (t_synonym / t_all * 100)
+  print "Currency: %.1f %%" % (t_currency / t_all * 100)
+  #print "Creating Spacy: %.1f %%" % (t_spacy / t_all * 100)
+  print "Numeric: %.1f %%" % (t_numeric / t_all * 100)
   return results
+
 
 
 @utils.timewatch()
@@ -164,19 +215,30 @@ def preprocess(input_texts, restrictions=[lambda x: True if x else False]):
     return True
 
   res = [l.strip() for l in re.sub('[ \t]+', " ", input_texts).split('\n')]
-  return [l for l in res if apply_restriction(l, restrictions)]
+  return [l for l in res if l and apply_restriction(l, restrictions)]
 
-
-def print_pos_lemma(doc):
-  if not isinstance(doc, spacy.tokens.doc.Doc):
-    doc = nlp(doc)
-  for t in doc:
-    print t, t.pos_, t.lemma_
-  print ""
-  return
 
 def debug():
+  
+  texts =  [
+    u'This costs at least 1,000 dollars.' ,
+    u'This costs at least thirty-eight dollars.' ,
+    u'This costs at least ￥1,000',
+    u'9 Responses to “Real or fake Christmas tree?”'
+  ] 
+  for text in texts:
+    text = word_tokenize(text)
+    print text
+    print stanford_tagger.tag(text)
+  exit(1)
   # Occasionally Spacy fails to parse unicode token.
+  def print_pos_lemma(doc):
+    if not isinstance(doc, spacy.tokens.doc.Doc):
+      doc = nlp(doc)
+    for t in doc:
+      print t, t.pos_, t.lemma_
+      print ""
+
   text = u'This costs at least ￥1,000' 
   print_pos_lemma(text)
   """
@@ -201,19 +263,24 @@ def debug():
 
 @utils.timewatch()
 def main(args):
-  #debug()
   input_file = args.input_file
   with open(input_file, "r",) as ifile:
     input_texts = ifile.read().decode('utf-8')
+    if args.max_lines:
+      input_texts = input_texts[:args.max_lines]
 
     # Reduce the number of candidate sentences by simple regexps.
-    include_no_noisy_tokens = lambda x: True if not re.search("[;=]", x) else False
+    include_no_noisy_tokens = lambda x: True if not re.search("[\(\){};=]", x) else False # for some reason, the stanford parser judges parentheses as numerical values
     include_number_f = lambda x: True if re.search("[0-9.,]+[0-9]", x, re.I) else False
     include_dollar_f = lambda x: True if re.search("\$[0-9.,]+[0-9]", x, re.I) else False
 
     restrictions = [include_no_noisy_tokens]
+    n_original = len(input_texts)
     input_texts = preprocess(input_texts, restrictions=restrictions)
+    n_preprocess = len(input_texts)
     res = extract_sentences(input_texts)
+    print("Number of lines in original data: {}".format(n_original))
+    print("Number of lines after preprocessing: {}".format(n_preprocess))
     print("Number of entries: {}".format(len(res)))
 
 
@@ -223,9 +290,7 @@ if __name__ == "__main__":
                       type=str, help="")
   parser.add_argument("-l", "--lemmatize", default=True,
                       type=utils.str2bool, help="")
-  parser.add_argument("-m", "--max_lines", default=30000,
+  parser.add_argument("-m", "--max_lines", default=0,
                       type=int, help="")
-  #parser.add_argument("-o", "--output_file", default="results.txt", 
-  #                    type=str, help="")
   args  = parser.parse_args()
   main(args)
