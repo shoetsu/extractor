@@ -144,8 +144,6 @@ def extract_sentences(input_texts, tmp_filename=None):
   logger.info("Filtering sentences by whether they contain synonyms of 'price' (charge, cost), currency units (dollar, franc), or currency symbols($, ₣)...")
   t_all = time.time()
   for i, line in enumerate(input_texts):
-    if tmp_filename and os.path.exists(tmp_filename):
-      break
     if i and i % 100000 == 0:
       logger.info('Done %d/%d ... (%f sec per a line )' % (i, len(input_texts), (time.time() - t_all)/i ))
     line = line.encode('ascii', 'ignore')
@@ -187,9 +185,6 @@ def extract_sentences(input_texts, tmp_filename=None):
     #t_numeric += time.time() - t
     candidates.append(line)
     tokenized_candidates.append(tokenized_text)
-
-  if tmp_filename:
-    
 
   t = time.time()
   _, contains_numeric = find_sents_with_numerics(tokenized_candidates, tmp_filename)
@@ -242,7 +237,7 @@ def extract(input_texts): # Deprecated
 
 
 @utils.timewatch()
-def preprocess(input_texts, restrictions=[lambda x: True if x else False]):
+def preprocess(input_texts, restrictions=[lambda x: True if x else False], max_lines=0):
   """
   <Args>
   input_texts: list of unicode string.
@@ -256,6 +251,8 @@ def preprocess(input_texts, restrictions=[lambda x: True if x else False]):
     return True
 
   res = [l.strip() for l in re.sub('[ \t]+', " ", input_texts).split('\n')]
+  if max_lines:
+    res = res[:max_lines]
   return [l for l in res if l and apply_restriction(l, restrictions)]
 
 
@@ -308,8 +305,7 @@ def main(args):
 
   with open(input_file, "r",) as ifile:
     input_texts = ifile.read().decode('utf-8')
-    if args.max_lines:
-      input_texts = input_texts[:args.max_lines]
+    #input_texts = [l.decode('utf-8') for i,l in enumerate(ifile) if not args.max_lines or i < args.max_lines ]
 
     # Reduce the number of candidate sentences by simple regexps.
     include_no_noisy_tokens = lambda x: True if not re.search("[{};=\|]", x) else False # for some reason, the stanford parser judges parentheses as numerical values
@@ -319,7 +315,8 @@ def main(args):
     restrictions = [include_no_noisy_tokens]
     n_original = len(input_texts)
     if not(args.tmp_file):
-      input_texts = preprocess(input_texts, restrictions=restrictions)
+      input_texts = preprocess(input_texts, restrictions=restrictions,
+                               max_lines=args.max_lines)
       n_preprocess = len(input_texts)
       results = extract_sentences(input_texts, args.tmp_file)
       logger.info("Number of lines in original data: {}".format(n_original))
