@@ -2,3 +2,9 @@
 *.txt
 ref
 *.gz
+.#*
+.fuse*
+*.gz*
+*.txt*
+tmp
+*~
