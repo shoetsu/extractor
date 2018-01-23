@@ -1,10 +1,10 @@
 # coding:utf-8 
 import sys, re, argparse, time, commands, os
 import spacy #, sense2vec
-import utils
+from utils import common
+from utils.currency import get_currency_tokens
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
-from currency import get_currency_tokens
 from nltk.tag.perceptron import PerceptronTagger
 from nltk.tag.stanford import StanfordPOSTagger
 #from nltk.tag.stanford import CoreNLPPOSTagger as StanfordPOSTagger
@@ -20,9 +20,8 @@ stanford_tagger = StanfordPOSTagger(
   TAGGER_DIR + '/stanford-postagger.jar'
 )
 
-NUM = "__NUM__"
 TMP_DIR = '/tmp/extractor_tmp'
-logger = utils.logManager()
+logger = common.logManager()
 
 #########################################
 ##    Functions for simple filtering
@@ -93,7 +92,7 @@ def find_sents_with_numerics(tokenized_sentences, tmp_filename=None):
   if tmp_filename:
     tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
   else:
-    tmp_filename = utils.random_string(5)
+    tmp_filename = common.random_string(5)
     tmp_filepath = os.path.join(TMP_DIR, tmp_filename)
     with open(tmp_filepath, 'w') as f:
       for l in tokenized_sentences:
@@ -102,8 +101,8 @@ def find_sents_with_numerics(tokenized_sentences, tmp_filename=None):
         f.write(line)
 
   if not os.path.exists(tmp_filepath + '.tagged'):
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stanford-postagger.sh')
     logger.info('Running POS analysis to %d sentences...' % len(tokenized_sentences))
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stanford-postagger.sh')
     cmd = "%s %s" % (script_path, tmp_filepath) 
     os.system(cmd)
 
@@ -119,6 +118,7 @@ def find_sents_with_numerics(tokenized_sentences, tmp_filename=None):
 def extract_sentences(input_texts, tmp_filename=None):
   candidates = []
   tokenized_candidates = []
+  # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
   synonyms = set([
     'amount', 'bill', 'cost', 'demand', 'discount', 'estimate', 'expenditure', 'expense', 'fare', 'fee', 'figure', 'output', 'pay', 'payment', 'premium', 'rate', 'return', 'tariff', 'valuation', 'worth', 'appraisal', 'assessment', 'barter', 'bounty', 'ceiling', 'charge', 'compensation', 'consideration', 'damage', 'disbursement', 'dues', 'exaction', 'hire', 'outlay', 'prize', 'quotation', 'ransom', 'reckoning', 'retail', 'reward', 'score', 'sticker', 'tab', 'ticket', 'toll', 'tune', 'wages', 'wholesale', 'appraisement', 
   ])
@@ -139,7 +139,6 @@ def extract_sentences(input_texts, tmp_filename=None):
         res.append(m.group(0))
     return res
 
-  # list of synonyms given from http://www.thesaurus.com/browse/price?s=t
   t_lemmatize, t_currency, t_synonym, t_spacy, t_numeric = 0,0,0,0,0
   logger.info("Filtering sentences by whether they contain synonyms of 'price' (charge, cost), currency units (dollar, franc), or currency symbols($, ₣)...")
   t_all = time.time()
@@ -188,7 +187,6 @@ def extract_sentences(input_texts, tmp_filename=None):
 
   t = time.time()
   _, contains_numeric = find_sents_with_numerics(tokenized_candidates, tmp_filename)
-  print len(contains_numeric), len(tokenized_candidates)
   assert len(contains_numeric) == len(tokenized_candidates)
   candidates = [s for x, s in zip(contains_numeric, candidates) if x]
   tokenized_candidates = [" ".join(s) for x, s in zip(contains_numeric, tokenized_candidates) if x]
@@ -196,7 +194,6 @@ def extract_sentences(input_texts, tmp_filename=None):
 
   #results = set([re.sub("[0-9.,]*[0-9]", NUM, sent) for sent in tokenized_candidates])
   #results = set([re.sub("[0-9.,]*[0-9]", NUM, sent) for sent in candidates])
-  results = candidates
 
   t_all = time.time() - t_all
   sys.stdout = sys.stderr
@@ -211,11 +208,11 @@ def extract_sentences(input_texts, tmp_filename=None):
   print "Numeric: %.1f %%" % (t_numeric / t_all * 100)
   sys.stdout = sys.__stdout__
   
-  return results
+  return candidates, tokenized_candidates
 
 
 
-@utils.timewatch()
+@common.timewatch()
 def extract(input_texts): # Deprecated
   # Codes for expression extraction (this is to be done after clustering?)
   ins_count = 0
@@ -223,11 +220,11 @@ def extract(input_texts): # Deprecated
   idx_expression = extract_expression(doc)
   if idx_expression and idx_expression not in showed_list:
     print "<L%d>\t" % i
-    flattened_indice = list(set(utils.flatten(idx_expression)))
+    flattened_indice = list(set(common.flatten(idx_expression)))
     print 'Original sentence:\t',
-    utils.print_colored([t.text for t in doc], flattened_indice, 'red')
+    common.print_colored([t.text for t in doc], flattened_indice, 'red')
     print 'POS list         :\t',
-    utils.print_colored([t.pos_ for t in doc], flattened_indice, 'blue')
+    common.print_colored([t.pos_ for t in doc], flattened_indice, 'blue')
     print 'Expressions      :\t',
     print [(" ".join([doc[i].text for i in indices]), indices[0], indices[-1]) for indices in idx_expression]
     showed_list.append(idx_expression)
@@ -236,7 +233,7 @@ def extract(input_texts): # Deprecated
 
 
 
-@utils.timewatch()
+@common.timewatch()
 def preprocess(input_texts, restrictions=[lambda x: True if x else False], max_lines=0):
   """
   <Args>
@@ -299,7 +296,7 @@ def debug():
   print_pos_lemma(text)
 
 
-@utils.timewatch()
+@common.timewatch()
 def main(args):
   input_file = args.input_file
 
@@ -318,7 +315,7 @@ def main(args):
       input_texts = preprocess(input_texts, restrictions=restrictions,
                                max_lines=args.max_lines)
       n_preprocess = len(input_texts)
-      results = extract_sentences(input_texts, args.tmp_file)
+      results, tokenized_results = extract_sentences(input_texts, args.tmp_file)
       logger.info("Number of lines in original data: {}".format(n_original))
       logger.info("Number of lines after preprocessing: {}".format(n_preprocess))
   logger.info("Number of entries: {}".format(len(results)))

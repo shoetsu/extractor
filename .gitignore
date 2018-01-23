@@ -8,3 +8,6 @@ ref
 *.txt*
 tmp
 *~
+nohup.out
+_trash
+results
