@@ -180,9 +180,10 @@ def get_currency_tokens(use_currency_name=True):
   # Pick up only the units of currency. (dollar, franc, ...)
   currency_names = []
   if use_currency_name:
-    # List up major currency names for now.
-    #currency_names = ['Dollar', 'Euro', 'Yen', 'Franc', 'Pound', 'Won']
-    currency_names = [n.split()[-1].lower() for n in CURRENCY_NAMES if not re.search("[0-9\(\)]", n)]
+    # List up major currency names for now to make it less noisy.
+    currency_names = ['Dollar', 'Yen']
+    currency_names = [x.lower() for x in currency_names]
+    #currency_names = [n.split()[-1].lower() for n in CURRENCY_NAMES if not re.search("[0-9\(\)]", n)]
 
   # TODO: if they are lemmatized and converted to lower case, irrelevant words can be contained (e.g. 'all', 'imp', 'rand')
   currency_symbols = list(set(currency_symbols))
@@ -190,7 +191,8 @@ def get_currency_tokens(use_currency_name=True):
   removal_names = ['real', 'rights', 'mark', 'won'] # Currency names with the same spelling as common words are removed.
   
   for c in removal_names:
-    currency_names.remove(c)
+    if c in currency_names:
+      currency_names.remove(c)
 
   plurals = [c + 's' for c in currency_names] # I don't know whether all currency units have a plural form....
   currency_names += plurals

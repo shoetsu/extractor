@@ -8,10 +8,10 @@ nltk.download('averaged_perceptron_tagger')
 1. ./extract_possible_sents.sh $corpus_dir  
 
 # Put all the extracted files into together.
-2. cat $corpus_dir/*.warc.gz.txt.extracted > all.extracted
+2. cat $corpus_dir/*.warc.gz.txt.extracted > all
 
 # Tokenize them and normalize numbers.
-3. python tokenize_and_normalize -i all.extracted > all.normalized
+3. python tokenize_and_normalize -i all > all.normalized
 
 # To get rid of noisy ones, apply more strict rules.
 4. python apply_strict_rules.py -i all.normalized > all.normalized.strict
