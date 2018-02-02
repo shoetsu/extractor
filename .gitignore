@@ -1,5 +1,8 @@
 *.pyc
 *.txt
+_bak
+\#*
+._*
 ref
 *.gz
 .#*
@@ -11,3 +14,4 @@ tmp
 nohup.out
 _trash
 results
+tmp.py

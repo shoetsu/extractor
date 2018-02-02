@@ -192,12 +192,13 @@ class NGramVectorizer(object):
     sentences: list of (tokenized) sentences.
     """
     def _get_ngram(s):
-      return flatten([[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(self.ngram_range[0], self.ngram_range[1]+1)])
+      return [[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(self.ngram_range[0], self.ngram_range[1]+1)]
 
     sentences = sentences_
     if type(sentences_[0]) == str:
       sentences = [x.split(' ') for x in sentences_]
-    ngrams = [_get_ngram(s) for s in sentences]
+
+    ngrams = [flatten(_get_ngram(s)) for s in sentences]
 
     if not self.vocab:
       min_freq = self.min_freq
@@ -268,7 +269,7 @@ def get_ngram_match(sent, ngram):
   return indices
 
 def get_ngram(s, min_n, max_n, vocab_condition=lambda x: True):
-  return flatten([[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(min_n, max_n+1)])
+  return [[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(min_n, max_n+1)]
 
 def check_overlaps(existing_spans, new_spans):
   # Input : list of tuples [(int, int), ....]

@@ -20,7 +20,7 @@ def tokenize_and_pos_tagging(origin_sents, tmp_path=None, remove_tmp=True):
     tokenized_sents = [l for l in open(tmp_path)]
   else:
     sys.stderr.write("Tokenizing all sentences... \n")
-    tokenized_sents = [word_tokenize(common.tokenize_heuristics(l).lower()) for l in origin_sents]
+    tokenized_sents = [word_tokenize(common.tokenize_heuristics(l).lower()) if l.strip() else '-' for l in origin_sents]
     #tokenized_sents = [word_tokenize(l.lower()) for l in origin_sents]
     tmp_filepath = common.restore_to_tmpfile([" ".join(l) for l in tokenized_sents], tmp_dir='/tmp/extractor_tmp')
     sys.stderr.write("Tokenized sentences are restored in \'%s\'.\n" % tmp_filepath)
@@ -37,6 +37,7 @@ def tokenize_and_pos_tagging(origin_sents, tmp_path=None, remove_tmp=True):
   if remove_tmp and tmp_filepath:
     os.system('rm %s %s.tagged' % (tmp_filepath, tmp_filepath))
     sys.stderr.write('Remove temporary files\n')
+  assert len(tokenized_sents) == len(pos_tags)
   return tokenized_sents, pos_tags
 
 def convert_num(sent, pos):
