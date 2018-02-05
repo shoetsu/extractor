@@ -29,7 +29,7 @@ CONFIG_NAME = 'config'
 NUM = common.NUM
 NONE = '-'
 stop_words = set(['.', ',', '!', '?'])
-vocab_condition = lambda x : True if set([NUM, NUM.lower()]).intersection(x) and not stop_words.intersection(set(x)) else False
+VOCAB_CONDITION = lambda x : True if set([NUM, NUM.lower()]).intersection(x) and not stop_words.intersection(set(x)) else False
 
 def get_ngram_matches(test_sentences, feature_scores):
   # feature_scores: default_dict[ngram] = score
@@ -40,7 +40,7 @@ def get_ngram_matches(test_sentences, feature_scores):
   for i, s in enumerate(test_sentences):
     if type(s) == str:
       s = s.split(' ')
-    test_sent_ngrams = common.flatten(common.get_ngram(s, min_n, max_n, vocab_condition=vocab_condition))
+    test_sent_ngrams = common.flatten(common.get_ngram(s, min_n, max_n, vocab_condition=VOCAB_CONDITION))
     possible_expr = list(set(feature_scores.keys()).intersection(test_sent_ngrams))
     possible_expr = sorted([(e, feature_scores[e]) for e in possible_expr], key=lambda x:-x[1])
     possible_expr = [e[0] for e in possible_expr]
@@ -232,7 +232,7 @@ class NGramBasedClustering(ClusterBase):
     self.vectorizer.load_vocab(self.output_dir)
 
   def get_features(self, sents):
-    BOW = self.vectorizer.fit_transform(sents, vocab_condition=vocab_condition)
+    BOW = self.vectorizer.fit_transform(sents, vocab_condition=VOCAB_CONDITION)
     self.vectorizer.save_vocab(self.output_dir)
     sys.stderr.write('BOW matrix: %s \n' % str(BOW.shape))
     bow_vector_path = args.train_file + '.%dgramvec' % args.ngram_range[1]
@@ -324,7 +324,7 @@ class NGramBasedClustering(ClusterBase):
   @common.timewatch()
   def test(self, args, sents, top_N=3):
     output_dir = self.output_dir
-    features = self.vectorizer.fit_transform(sents, vocab_condition=vocab_condition)
+    features = self.vectorizer.fit_transform(sents, vocab_condition=VOCAB_CONDITION)
     predictions = self.model.predict(features)
 
     feature_scores = {}
