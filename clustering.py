@@ -7,6 +7,8 @@ from sklearn.cluster import KMeans, DBSCAN
 from sklearn.utils.linear_assignment_ import linear_assignment
 from utils import common
 from tokenize_and_normalize import convert_num, tokenize_and_pos_tagging
+#from utils.features import NGramVectorizer, DepNGramVectorizer
+import utils.features
 try:
   import cPickle as pickle
 except:
@@ -23,6 +25,7 @@ tagger = StanfordPOSTagger(
 KMEANS_STR = 'kmeans'
 DBSCAN_STR = 'dbscan'
 MODEL_NAME = 'cluster.model'
+CONFIG_NAME = 'config'
 NUM = common.NUM
 NONE = '-'
 stop_words = set(['.', ',', '!', '?'])
@@ -116,27 +119,74 @@ def ngram_matching(gold, pred, N):
   return TP, gold_ngrams, pred_ngrams
 
 
+
 class ClusterBase(object):
   def __init__(self, args):
+    self.output_dir = args.output_dir
+    if args.mode == 'train':
+      self.config = common.dotDict(args.__dict__)
+      sys.stderr.write('Saving config...\n')
+      config = common.dotDict(args.__dict__)
+      self.save_config(args)
+    else:
+      sys.stderr.write('Loading config...\n')
+      self.config = config = self.load_config(args)
+
     self.tokenizer = word_tokenize
-    clustering_algorithm = args.clustering_algorithm.lower()
+    clustering_algorithm = self.config.clustering_algorithm.lower()
     if clustering_algorithm == KMEANS_STR:
-      self.model = KMeans(n_clusters=args.n_clusters, random_state=0)
-      self.output_dir = os.path.join(
-        args.output_dir, 
-        '%dgram_kmeans_c%02d' % (args.ngram_range[1], args.n_clusters))
+      self.model = KMeans(n_clusters=self.config.n_clusters, random_state=0)
     elif clustering_algorithm == DBSCAN_STR:
       self.model = DBSCAN()
-      self.output_dir = os.path.join(
-        args.output_dir, 
-        '%dgram_dbscan' % (args.ngram_range[1]))
-    output_dir = self.output_dir
 
-    if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
-      self.model = pickle.load(open(os.path.join(output_dir, MODEL_NAME), 'rb'))
+    if os.path.exists(os.path.join(self.output_dir, MODEL_NAME)):
+      self.model = pickle.load(open(os.path.join(self.output_dir, MODEL_NAME), 'rb'))
+
+  def save_config(self, args):
+    print args
+    if not os.path.exists(args.output_dir):
+      os.makedirs(args.output_dir)
+
+    tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup']
+    restored_vals = {k:v for k, v in args.__dict__.items() if k not in tmp_vals}
+    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+      config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
+      config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
+      msg = "Remove the old configs? [Y/n] (%s)" 
+      common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
+
+    pickle.dump(restored_vals, 
+                open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'wb'))
+    with open(os.path.join(args.output_dir, CONFIG_NAME) + '.txt', 'w') as f:
+      for k,v in restored_vals.items():
+        print k, v, type(v)
+        type_name = re.search("<type '(.+?)'>", str(type(v))).group(1)
+        line = '%s\t%s\t%s\n' % (k,v, type_name)
+        f.write(line)
+
+  def load_config(self, args):
+    if False and os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+      config = pickle.load(open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'rb'))
+      config = common.dotDict(config)
+    elif os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
+      config = common.dotDict()
+      for l in open(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
+        k, v, type_name = l.replace('\n', '').split('\t')
+        if type_name == 'tuple':
+          config[k] = common.str2tuple(v)
+        elif type_name == int:
+          config[k] == int
+        elif type_name == float:
+          config[k] == float
+        else:
+          config[k] = v
+    return config
 
   def evaluate(self, tests, origins, predictions, N=4):
-    assert len(tests) == len(predictions)
+    try:
+      assert len(tests) == len(predictions)
+    except:
+      raise ValueError('length of (tests, predictions) = (%d, %d)' % (len(tests), len(predictions)))
     res_em = []
     res_ngm = []
     for i, (t, o, pred) in enumerate(zip(tests, origins, predictions)):
@@ -176,15 +226,16 @@ class ClusterBase(object):
 class NGramBasedClustering(ClusterBase):
   def __init__(self, args):
     super(NGramBasedClustering, self).__init__(args)
-    self.vectorizer = common.NGramVectorizer(ngram_range=args.ngram_range, 
-                                             min_freq=args.min_freq)
+    self.vectorizer = getattr(utils.features, self.config.feature_type)(
+      ngram_range=args.ngram_range, 
+      min_freq=args.min_freq)
     self.vectorizer.load_vocab(self.output_dir)
 
   def get_features(self, sents):
     BOW = self.vectorizer.fit_transform(sents, vocab_condition=vocab_condition)
     self.vectorizer.save_vocab(self.output_dir)
     sys.stderr.write('BOW matrix: %s \n' % str(BOW.shape))
-    bow_vector_path = args.input_file + '.%dgramvec' % args.ngram_range[1]
+    bow_vector_path = args.train_file + '.%dgramvec' % args.ngram_range[1]
     if args.cleanup or not os.path.exists(bow_vector_path):
       sys.stderr.write('Vector file: \'%s\'\n' % bow_vector_path)
       np.savetxt(bow_vector_path, BOW)
@@ -256,21 +307,12 @@ class NGramBasedClustering(ClusterBase):
     #   sys.stdout = sys.__stdout__
 
   @common.timewatch()
-  def train(self, args, sents):
+  def train(self, args):
     output_dir = self.output_dir
-    if os.path.exists(output_dir):
-      while True:
-        print "Remove the old results? [Y/n] (%s)" % output_dir
-        x = raw_input().lower()
-        if x == 'y' or '\n':
-          os.system('rm -r %s' % output_dir)
-          break
-        elif x == 'n':
-          print "Operation was aborted."
-          exit(1)
-        else:
-          print "Type 'y' or 'n'."
-    os.makedirs(output_dir)
+    sents = [l.replace('\n', '') for l in open(args.train_file)]
+    if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
+      msg = "Remove the old results? [Y/n] (%s)" % output_dir
+      common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
 
     sents = [self.tokenizer(l) for l in sents]
     features = self.get_features(sents)
@@ -304,6 +346,10 @@ class NGramBasedClustering(ClusterBase):
       res_exprs.append(exprs)
     return res_exprs
 
+
+#class DependencyBasedClustering(NGramBasedClustering):
+#  def __init__(args):
+    
 # def test_frequent(args, test_sentences, output_dir, top_N=1):
 #   summaries_path = commands.getoutput('ls -d %s/c*.summary' % output_dir)
 #   r = re.compile("\"(.+?)\":([0-9\.]+)")
@@ -320,7 +366,7 @@ class NGramBasedClustering(ClusterBase):
 #     k = tuple(k.split(' '))
 #     feature_scores[k] = v if v >= feature_scores[k] else feature_scores[k]
 
-#   test_sentences = [l.replace('\n', '') for l in open(args.input_file)]
+#   test_sentences = [l.replace('\n', '') for l in open(args.train_file)]
 #   res_spans = apply_ngrams(test_sentences, feature_scores)
 #   res_exprs = []
   
@@ -380,18 +426,20 @@ def read_dplabels():
   res = collections.OrderedDict()
   for l in open(path):
     l = l.replace('\n', '').split('\t')
-    if len([x for x in l if x]) == 0:
+    if len([x.split() for x in l if x]) == 0:
       continue
     if l[0].isdigit():
       idx, sent = l
+      idx = int(idx)
+      res[idx] = ""
     else:
       label = " | ".join(l[1].strip().split('|'))
-    res[int(idx)] = l[1]
-
+      res[idx] = label
   indices = res.keys()
   labels, labels_pos = tokenize_and_pos_tagging(res.values())
   labels, labels_pos = split_annotations(labels, labels_pos)
   labels, labels_pos = common.unzip([common.unzip([convert_num(a, p) for a, p in zip(label, label_pos)]) for label, label_pos in zip(labels, labels_pos)])
+
   assert len(indices) == len(labels)
   res = []
   for idx, l in zip(indices, labels):
@@ -403,9 +451,9 @@ def read_dplabels():
 @common.timewatch()
 def main(args):
   model = NGramBasedClustering(args)
+
   if args.mode == 'train':
-    sentences = [l.replace('\n', '') for l in open(args.input_file)]
-    model.train(args, sentences)
+    model.train(args)
   elif args.mode == 'test':
     tests, origins = read_human_annotations(args)
     sentences = [sent for idx, sent, anno in tests]
@@ -422,15 +470,15 @@ if __name__ == "__main__":
   random.seed(0)
   np.random.seed(0)
   parser = argparse.ArgumentParser()
+  parser.add_argument("output_dir")
   parser.add_argument('-m', '--mode', default='train')
-  parser.add_argument("-i", "--input_file", default="results/candidate_sentences/corpus/all.normalized.strict.m30.0-10000", type=str, help="")
+  parser.add_argument("-i", "--train_file", default="results/candidate_sentences/corpus/all.normalized.strict.m30.0-10000", type=str, help="")
   parser.add_argument("-a", "--clustering_algorithm", default="kmeans", type=str)
-  parser.add_argument("-o", "--output_dir",
-                      default="results/clustering")
   parser.add_argument("-nr", "--ngram_range", default=(2,4),
                       type=common.str2tuple, help="")
   parser.add_argument("-min", "--min_freq", default=3, type=int)
   parser.add_argument("-nc", "--n_clusters", default=100, type=int)
+  parser.add_argument("-f", "--feature_type", default='DepNGramVectorizer', type=str)
   parser.add_argument("-cl", "--cleanup", default=False, type=common.str2bool)
   parser.add_argument("-d", "--debug", default=False, type=common.str2bool)
   args  = parser.parse_args()

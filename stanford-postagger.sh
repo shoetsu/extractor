@@ -21,7 +21,7 @@ fi
 input_path=$1
 ROOT_DIR=/home/shoetsu/downloads/stanford-postagger
 MODEL_PATH=$ROOT_DIR/models/english-left3words-distsim.tagger
-#MODEL_PATH=$ROOT_DIR/models/english-bidirectional-distsim.tagger # 20 times slower. 
+ 
 
 java -mx$memory -cp $ROOT_DIR/stanford-postagger.jar: edu.stanford.nlp.tagger.maxent.MaxentTagger -model $MODEL_PATH -textFile $input_path -outputFormat tsv -sentenceDelimiter newline -tokenize false > $input_path.tagged 
 

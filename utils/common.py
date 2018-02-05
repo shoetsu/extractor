@@ -51,10 +51,13 @@ def restore_to_tmpfile(sentences, tmp_dir='/tmp'):
   return tmp_filepath
 
 
-def str2tuple(v, type_f=int):  
+def str2tuple(v, type_f=int): 
   if type(v) in [list, tuple]:
     res = (type_f(x) for x in v if x != ',')
   else:
+    m = re.match('\((.+)\)', v)
+    if m:
+      v = m.group(1)
     res = (type_f(x) for x in v.split(','))
   return tuple(list(res))
 
@@ -157,71 +160,6 @@ class recDotDict(dict):
     super(recDotDict, self).__init__(_dict)
 
 
-class NGramVectorizer(object):
-  def __init__(self, ngram_range=(1,2), min_freq=0):
-    assert ngram_range[0] > 0 and len(ngram_range) == 2 
-    assert type(min_freq) == int
-    """
-    Setup its vocabulary when fit_transform is called first.
-    """
-    self.ngram_range = ngram_range
-    self.vocab = None
-    self.rev_vocab = None
-    self.min_freq = min_freq
-  
-  def save_vocab(self, output_dir):
-    if not self.vocab:
-      raise Exception('This vectorizer has no vocabulary.')
-
-    if not os.path.exists(output_dir + '/cluster.vocab'):
-      with open(output_dir + '/cluster.vocab', 'w') as f:
-        for ng in self.vocab:
-          f.write(' '.join(ng) + '\n')
-
-  def load_vocab(self, output_dir):
-    if os.path.exists(output_dir + '/cluster.vocab'):
-      with open(output_dir + '/cluster.vocab') as f:
-        self.vocab = [tuple(l.replace('\n', '').split(' ')) for l in f]
-        self.rev_vocab = collections.OrderedDict([(v, i) for i,v in enumerate(self.vocab)])
-
-  def fit(self, *args, **kwargs):
-    return self.fit_transform(*args, **kwargs)
-
-  def fit_transform(self, sentences_, vocab_condition=lambda x: True):
-    """
-    sentences: list of (tokenized) sentences.
-    """
-    def _get_ngram(s):
-      return [[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(self.ngram_range[0], self.ngram_range[1]+1)]
-
-    sentences = sentences_
-    if type(sentences_[0]) == str:
-      sentences = [x.split(' ') for x in sentences_]
-
-    ngrams = [flatten(_get_ngram(s)) for s in sentences]
-
-    if not self.vocab:
-      min_freq = self.min_freq
-      vocab = collections.Counter(flatten(ngrams))
-      vocab = sorted([(v, vocab[v]) for v in vocab if not self.min_freq or vocab[v] >= self.min_freq], key=lambda x: -x[1])
-      self.vocab = [v[0] for v in vocab]
-      self.rev_vocab = collections.OrderedDict([(v, i) for i,v in enumerate(self.vocab)])
-
-    ngram_vectors = [np.bincount([self.rev_vocab[t] for t in collections.Counter(ng) if t in self.rev_vocab], minlength=len(self.vocab)) for ng in ngrams]
-
-    # normalize vectors
-    ngram_vectors = np.asarray([v / np.linalg.norm(v) if np.linalg.norm(v) else v for v in ngram_vectors])
-    return ngram_vectors
-
-  def vec2tokens(self, vectors):
-    assert len(vectors.shape) <= 2
-    if len(vectors.shape) == 2:
-      return [sorted([(self.vocab[idx], v[idx]) for idx in v.nonzero()[0] if self.vocab[idx] != (NUM,)], key=lambda x: -x[1]) for v in vectors] 
-    elif len(vectors.shape) == 1:
-      v = vectors
-      return sorted([(self.vocab[idx], v[idx]) for idx in v.nonzero()[0] if self.vocab[idx] != (NUM,)], key=lambda x: -x[1]) 
-
-
 def multi_process(func, *args):
   '''
   Args:
@@ -289,3 +227,23 @@ def tokenize_heuristics(sent):
 def unzip(l):
     #*map(list, zip(sents, sents_pos))
   return map(list, zip(*l))
+
+
+def ask_yn(message, func, *args, **kwargs):
+  print message
+  print func
+  print args
+  print kwargs
+  while True:
+    print message
+    #print "Remove the old results? [Y/n] (%s)" % output_dir
+    x = raw_input().lower()
+    if x == 'y' or x == '\n' or x == '':
+      func(*args, **kwargs)
+      #os.system('rm -r %s' % output_dir)
+      break
+    elif x == 'n':
+      print "Operation was aborted."
+      exit(1)
+    else:
+      print "Type 'y' or 'n'."
