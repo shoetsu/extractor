@@ -24,6 +24,7 @@ def load_or_create(processed_path, func, *args):
 #   Constants
 ####################
 NUM = "__NUM__"
+NUMBER = "703" # in parsing, "__NUM__" can make troubles.
 UNK = "__UNK__" 
 TAGGER_DIR = '/home/shoetsu/downloads/stanford-postagger'
 ####################

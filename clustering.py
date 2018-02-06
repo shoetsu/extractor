@@ -27,9 +27,10 @@ DBSCAN_STR = 'dbscan'
 MODEL_NAME = 'cluster.model'
 CONFIG_NAME = 'config'
 NUM = common.NUM
+NUMBER = common.NUMBER
 NONE = '-'
 stop_words = set(['.', ',', '!', '?'])
-VOCAB_CONDITION = lambda x : True if set([NUM, NUM.lower()]).intersection(x) and not stop_words.intersection(set(x)) else False
+VOCAB_CONDITION = lambda x : True if set([NUM, NUM.lower(), NUMBER, NUMBER.lower()]).intersection(x) and not stop_words.intersection(set(x)) else False
 
 def get_ngram_matches(test_sentences, feature_scores):
   # feature_scores: default_dict[ngram] = score
@@ -143,23 +144,22 @@ class ClusterBase(object):
       self.model = pickle.load(open(os.path.join(self.output_dir, MODEL_NAME), 'rb'))
 
   def save_config(self, args):
-    print args
+    sys.stderr.write(str(args))
     if not os.path.exists(args.output_dir):
       os.makedirs(args.output_dir)
 
-    tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup']
+    tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup', 'test_file']
     restored_vals = {k:v for k, v in args.__dict__.items() if k not in tmp_vals}
-    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
-      config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
-      config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
-      msg = "Remove the old configs? [Y/n] (%s)" 
-      common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
+    # if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+    #   config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
+    #   config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
+    #   msg = "Remove the old configs? [Y/n] (%s)" 
+    #   common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
 
     pickle.dump(restored_vals, 
                 open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'wb'))
     with open(os.path.join(args.output_dir, CONFIG_NAME) + '.txt', 'w') as f:
       for k,v in restored_vals.items():
-        print k, v, type(v)
         type_name = re.search("<type '(.+?)'>", str(type(v))).group(1)
         line = '%s\t%s\t%s\n' % (k,v, type_name)
         f.write(line)
@@ -180,6 +180,7 @@ class ClusterBase(object):
           config[k] == float
         else:
           config[k] = v
+    sys.stderr.write(str(config)+'\n')
     return config
 
   def evaluate(self, tests, origins, predictions, N=4):
@@ -192,16 +193,20 @@ class ClusterBase(object):
     for i, (t, o, pred) in enumerate(zip(tests, origins, predictions)):
       idx, sent, gold = t
       _, o_sent, o_gold = o
-      print '<%d>' % idx
-      print 'Original Sent :\t', o_sent
-      print 'Tokenized Sent:\t', ' '.join(sent)
-      print 'Prediction    :\t', ', '.join(['\"' + ' '.join(e) + '\"' for e in pred])
-      print 'Human         :\t', ', '.join(['\"' + ' '.join(g) + '\"' for g in gold])
+
       TP, gold_ngrams, pred_ngrams = ngram_matching(gold, pred, N)
       res_ngm.append((len(TP), len(gold_ngrams), len(pred_ngrams)))
       TP, FP, FN = exact_matching(gold, pred)
       res_em.append((len(TP), len(TP+FN), len(TP+FP)))
+      
+      em = 'EM_Success' if len(TP) == len(TP+FP+FN) else 'EM_Failure'
+      print '<%d>:\t%s' % (idx, em)
+      print 'Original Sent :\t', o_sent
+      print 'Tokenized Sent:\t', ' '.join(sent)
+      print 'Prediction    :\t', ', '.join(['\"' + ' '.join(e) + '\"' for e in pred])
+      print 'Human         :\t', ', '.join(['\"' + ' '.join(g) + '\"' for g in gold])
 
+    # Calculate precisions and recalls from the results of all lines together.
     def calc_PR(res):
       n_tp = sum([x[0] for x in res])
       n_gold = sum([x[1] for x in res])
@@ -227,18 +232,20 @@ class NGramBasedClustering(ClusterBase):
   def __init__(self, args):
     super(NGramBasedClustering, self).__init__(args)
     self.vectorizer = getattr(utils.features, self.config.feature_type)(
+      self.output_dir,
       ngram_range=args.ngram_range, 
-      min_freq=args.min_freq)
+      min_freq=args.min_freq,
+      vocab_condition=VOCAB_CONDITION)
     self.vectorizer.load_vocab(self.output_dir)
 
-  def get_features(self, sents):
-    BOW = self.vectorizer.fit_transform(sents, vocab_condition=VOCAB_CONDITION)
-    self.vectorizer.save_vocab(self.output_dir)
-    sys.stderr.write('BOW matrix: %s \n' % str(BOW.shape))
-    bow_vector_path = args.train_file + '.%dgramvec' % args.ngram_range[1]
-    if args.cleanup or not os.path.exists(bow_vector_path):
-      sys.stderr.write('Vector file: \'%s\'\n' % bow_vector_path)
-      np.savetxt(bow_vector_path, BOW)
+  def get_features(self, sents, input_filepath=None):
+    BOW = self.vectorizer.fit_transform(sents,
+                                        input_filepath=input_filepath)
+    # sys.stderr.write('BOW matrix: %s \n' % str(BOW.shape))
+    # bow_vector_path = input_filepath + '.%dgramvec' % self.config.ngram_range[1]
+    # if args.cleanup or not os.path.exists(bow_vector_path):
+    #   sys.stderr.write('Vector file: \'%s\'\n' % bow_vector_path)
+    #   np.savetxt(bow_vector_path, BOW)
     return BOW
 
   def output_clusters(self, cluster_results, all_sents, all_features):
@@ -309,23 +316,23 @@ class NGramBasedClustering(ClusterBase):
   @common.timewatch()
   def train(self, args):
     output_dir = self.output_dir
-    sents = [l.replace('\n', '') for l in open(args.train_file)]
-    if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
-      msg = "Remove the old results? [Y/n] (%s)" % output_dir
-      common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
+    sents = [l.replace('\n', '') for l in open(self.config.train_file)]
+    # if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
+    #   msg = "Remove the old results? [Y/n] (%s)" % output_dir
+    #   common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
 
     sents = [self.tokenizer(l) for l in sents]
-    features = self.get_features(sents)
+    features = self.get_features(sents, input_filepath=self.config.train_file)
     res = self.model.fit(features)
     self.output_clusters(res, sents, self.vectorizer.vec2tokens(features))
     pickle.dump(self.model, open(os.path.join(output_dir, MODEL_NAME), 'wb'))
     return res
 
   @common.timewatch()
-  def test(self, args, sents, top_N=3):
+  def test(self, args, sents, top_N=3, test_filepath=None):
     output_dir = self.output_dir
-    features = self.vectorizer.fit_transform(sents, vocab_condition=VOCAB_CONDITION)
-    predictions = self.model.predict(features)
+    features = self.get_features(sents, input_filepath=test_filepath)
+    cluster_ids = self.model.predict(features)
 
     feature_scores = {}
     summaries_path = commands.getoutput('ls -d %s/c*.summary' % output_dir)
@@ -339,43 +346,18 @@ class NGramBasedClustering(ClusterBase):
       for k, v in top_n_features:
         feature_scores[c_idx][k] = v
 
-    res_exprs = []
-    for i, (sent, c_idx) in enumerate(zip(sents, predictions)):
+    predictions = []
+    for i, (sent, c_idx) in enumerate(zip(sents, cluster_ids)):
       spans = get_ngram_matches([sent], feature_scores[c_idx])[0]
       exprs = [sent[s[0]:s[1]+1] for s in spans]
-      res_exprs.append(exprs)
-    return res_exprs
-
-
-#class DependencyBasedClustering(NGramBasedClustering):
-#  def __init__(args):
-    
-# def test_frequent(args, test_sentences, output_dir, top_N=1):
-#   summaries_path = commands.getoutput('ls -d %s/c*.summary' % output_dir)
-#   r = re.compile("\"(.+?)\":([0-9\.]+)")
-#   features = [] # [(ngram, score), ...]
-#   for f in summaries_path.split():
-#     c_idx = int(re.search('(.+)/c([0-9]+).summary', f).group(2))
-#     l = open(f).readline().replace('\n', '')
-#     top_n_features = [(k, float(v)) for k,v in r.findall(l)]
-#     features.append(top_n_features[:top_N])
-
-#   feature_scores = collections.defaultdict(int)
-
-#   for k, v in common.flatten(features):
-#     k = tuple(k.split(' '))
-#     feature_scores[k] = v if v >= feature_scores[k] else feature_scores[k]
-
-#   test_sentences = [l.replace('\n', '') for l in open(args.train_file)]
-#   res_spans = apply_ngrams(test_sentences, feature_scores)
-#   res_exprs = []
-  
-#   for i, (sent, spans) in enumerate(zip(test_sentences, res_spans)):
-#     exprs = [" ".join(sent.split(' ')[s[0]:s[1]+1]) for s in spans]
-#     res_exprs.append(exprs)
-#     print "Sent%4d:\t%s" % (i, sent)
-#     print "Expr%4d:\t%s" % (i, ', '.join(exprs))
-#   return res_exprs
+      # ##############Replacement
+      # #print '--------'
+      # #print exprs 
+      # exprs = [" ".join(e).replace('price :', '').strip().split(' ') for e in exprs]
+      # #print exprs
+      # ################
+      predictions.append(exprs)
+    return predictions, cluster_ids
 
 def split_annotations(annos, annos_pos):
   annos = [[e.strip().split(' ') if not e == NONE else [] for e in ' '.join(a).split('|')] for a in annos ]
@@ -393,12 +375,11 @@ def split_annotations(annos, annos_pos):
 
 
 @common.timewatch()
-def read_human_annotations(args, max_len=0):
-  path = 'results/candidate_sentences/corpus/corpus.origin.test.summary'
+def read_human_annotations(test_filepath, max_len=0):
   res = collections.defaultdict()
   lines = []
   origins = []
-  for i, l in enumerate(open(path)):
+  for i, l in enumerate(open(test_filepath)):
     if max_len and i > max_len:
       break
     idx, sent, anno = l.replace('\n', '').split('\t')
@@ -455,12 +436,12 @@ def main(args):
   if args.mode == 'train':
     model.train(args)
   elif args.mode == 'test':
-    tests, origins = read_human_annotations(args)
+    tests, origins = read_human_annotations(args.test_file)
     sentences = [sent for idx, sent, anno in tests]
-    res_exprs = model.test(args, sentences)
+    res_exprs = model.test(args, sentences, test_filepath=args.test_file)
     model.evaluate(tests, origins, res_exprs)
   elif args.mode == 'evaluate':
-    tests, origins = read_human_annotations(args)
+    tests, origins = read_human_annotations(args.test_file)
     res_exprs = read_dplabels()
     model.evaluate(tests, origins, res_exprs)
   else:
@@ -471,14 +452,17 @@ if __name__ == "__main__":
   np.random.seed(0)
   parser = argparse.ArgumentParser()
   parser.add_argument("output_dir")
-  parser.add_argument('-m', '--mode', default='train')
-  parser.add_argument("-i", "--train_file", default="results/candidate_sentences/corpus/all.normalized.strict.m30.0-10000", type=str, help="")
+  parser.add_argument("--train_file", default='results/candidate_sentences/corpus/all.normalized.strict.m30.0-10000', type=str, help="")
   parser.add_argument("-a", "--clustering_algorithm", default="kmeans", type=str)
   parser.add_argument("-nr", "--ngram_range", default=(2,4),
                       type=common.str2tuple, help="")
   parser.add_argument("-min", "--min_freq", default=3, type=int)
   parser.add_argument("-nc", "--n_clusters", default=100, type=int)
-  parser.add_argument("-f", "--feature_type", default='DepNGramVectorizer', type=str)
+  parser.add_argument("-f", "--feature_type", default='DependencyVectorizer', type=str)
+
+  # Variables not restored
+  parser.add_argument('-m', '--mode', default='train')
+  parser.add_argument("--test_file", default='results/candidate_sentences/corpus/corpus.origin.test.summary', type=str, help="")
   parser.add_argument("-cl", "--cleanup", default=False, type=common.str2bool)
   parser.add_argument("-d", "--debug", default=False, type=common.str2bool)
   args  = parser.parse_args()
