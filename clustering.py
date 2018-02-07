@@ -144,17 +144,17 @@ class ClusterBase(object):
       self.model = pickle.load(open(os.path.join(self.output_dir, MODEL_NAME), 'rb'))
 
   def save_config(self, args):
-    sys.stderr.write(str(args))
+    sys.stderr.write(str(args) + '\n')
     if not os.path.exists(args.output_dir):
       os.makedirs(args.output_dir)
 
     tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup', 'test_file']
     restored_vals = {k:v for k, v in args.__dict__.items() if k not in tmp_vals}
-    # if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
-    #   config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
-    #   config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
-    #   msg = "Remove the old configs? [Y/n] (%s)" 
-    #   common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
+    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+      config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
+      config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
+      msg = "Remove the old configs? [Y/n] (%s)" 
+      common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
 
     pickle.dump(restored_vals, 
                 open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'wb'))
@@ -165,9 +165,10 @@ class ClusterBase(object):
         f.write(line)
 
   def load_config(self, args):
-    if False and os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
       config = pickle.load(open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'rb'))
       config = common.dotDict(config)
+      
     elif os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
       config = common.dotDict()
       for l in open(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
@@ -180,10 +181,12 @@ class ClusterBase(object):
           config[k] == float
         else:
           config[k] = v
+    else:
+      raise ValueError('No config file is found.')
     sys.stderr.write(str(config)+'\n')
     return config
 
-  def evaluate(self, tests, origins, predictions, N=4):
+  def evaluate(self, tests, origins, predictions, N=4, cluster_ids=None):
     try:
       assert len(tests) == len(predictions)
     except:
@@ -200,7 +203,7 @@ class ClusterBase(object):
       res_em.append((len(TP), len(TP+FN), len(TP+FP)))
       
       em = 'EM_Success' if len(TP) == len(TP+FP+FN) else 'EM_Failure'
-      print '<%d>:\t%s' % (idx, em)
+      print '<%d (c%03d)>:\t%s' % (idx, cluster_ids[i], em)
       print 'Original Sent :\t', o_sent
       print 'Tokenized Sent:\t', ' '.join(sent)
       print 'Prediction    :\t', ', '.join(['\"' + ' '.join(e) + '\"' for e in pred])
@@ -231,12 +234,15 @@ class ClusterBase(object):
 class NGramBasedClustering(ClusterBase):
   def __init__(self, args):
     super(NGramBasedClustering, self).__init__(args)
-    self.vectorizer = getattr(utils.features, self.config.feature_type)(
-      self.output_dir,
-      ngram_range=args.ngram_range, 
-      min_freq=args.min_freq,
-      vocab_condition=VOCAB_CONDITION)
-    self.vectorizer.load_vocab(self.output_dir)
+    vectorizers = []
+    for idx, feature_type in enumerate(self.config.feature_type.split(',')):
+      vectorizer = getattr(utils.features, feature_type)(
+        idx, self.output_dir,
+        ngram_range=args.ngram_range, 
+        min_freq=args.min_freq,
+        vocab_condition=VOCAB_CONDITION)
+      vectorizers.append(vectorizer)
+    self.vectorizer = utils.features.MultiVectorizerWrapper(vectorizers)
 
   def get_features(self, sents, input_filepath=None):
     BOW = self.vectorizer.fit_transform(sents,
@@ -248,7 +254,7 @@ class NGramBasedClustering(ClusterBase):
     #   np.savetxt(bow_vector_path, BOW)
     return BOW
 
-  def output_clusters(self, cluster_results, all_sents, all_features):
+  def output_clusters(self, cluster_results, all_sents, all_features, top_N=5):
     output_dir = self.output_dir
     def _feat2str(feat):
       """
@@ -268,12 +274,13 @@ class NGramBasedClustering(ClusterBase):
 
     if hasattr(cluster_results, 'cluster_centers_'):
       np.savetxt(output_dir + '/cluster.centroids', cluster_results.cluster_centers_)
-
+    # Practically, this weighting didn't make large effects to the results.
     def _get_weighted_freqency(feats):
       scores = collections.defaultdict(int)
       for k, v in common.flatten(feats):
         scores[k] += v
       return sorted([(k, v*len(k)) for k,v in scores.items()], key=lambda x: -x[1])
+      #return sorted([(k, v) for k,v in scores.items()], key=lambda x: -x[1])
 
     sys.stderr.write("The result is output to %s.\n" % output_dir)
     with open(output_dir + '/expressions', 'w') as f:
@@ -292,7 +299,7 @@ class NGramBasedClustering(ClusterBase):
 
       with open(output_dir + '/c%03d.summary' % i, 'w') as f:
         sys.stdout = f
-        print _feat2str(_get_weighted_freqency(feats)[:5])
+        print _feat2str(_get_weighted_freqency(feats)[:top_N])
         sys.stdout = sys.__stdout__
       # with open(output_dir + '/c%03d.features' % i, 'w') as f:
       #   sys.stdout = f
@@ -318,8 +325,8 @@ class NGramBasedClustering(ClusterBase):
     output_dir = self.output_dir
     sents = [l.replace('\n', '') for l in open(self.config.train_file)]
     # if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
-    #   msg = "Remove the old results? [Y/n] (%s)" % output_dir
-    #   common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
+    #    msg = "Remove the old results? [Y/n] (%s)" % output_dir
+    #    common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
 
     sents = [self.tokenizer(l) for l in sents]
     features = self.get_features(sents, input_filepath=self.config.train_file)
@@ -351,10 +358,7 @@ class NGramBasedClustering(ClusterBase):
       spans = get_ngram_matches([sent], feature_scores[c_idx])[0]
       exprs = [sent[s[0]:s[1]+1] for s in spans]
       # ##############Replacement
-      # #print '--------'
-      # #print exprs 
       # exprs = [" ".join(e).replace('price :', '').strip().split(' ') for e in exprs]
-      # #print exprs
       # ################
       predictions.append(exprs)
     return predictions, cluster_ids
@@ -438,12 +442,13 @@ def main(args):
   elif args.mode == 'test':
     tests, origins = read_human_annotations(args.test_file)
     sentences = [sent for idx, sent, anno in tests]
-    res_exprs = model.test(args, sentences, test_filepath=args.test_file)
-    model.evaluate(tests, origins, res_exprs)
+    predictions, cluster_ids = model.test(args, sentences, 
+                                          test_filepath=args.test_file)
+    model.evaluate(tests, origins, predictions, cluster_ids=cluster_ids)
   elif args.mode == 'evaluate':
     tests, origins = read_human_annotations(args.test_file)
-    res_exprs = read_dplabels()
-    model.evaluate(tests, origins, res_exprs)
+    predictions = read_dplabels()
+    model.evaluate(tests, origins, predictions)
   else:
     raise ValueError('args.mode must be \'train\' or \'test\'.')
 
@@ -458,6 +463,7 @@ if __name__ == "__main__":
                       type=common.str2tuple, help="")
   parser.add_argument("-min", "--min_freq", default=3, type=int)
   parser.add_argument("-nc", "--n_clusters", default=100, type=int)
+  #parser.add_argument("-f", "--feature_type", default='NGramVectorizer,DependencyVectorizer', type=str)
   parser.add_argument("-f", "--feature_type", default='DependencyVectorizer', type=str)
 
   # Variables not restored
