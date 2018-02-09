@@ -32,29 +32,54 @@ NONE = '-'
 stop_words = set(['.', ',', '!', '?'])
 VOCAB_CONDITION = lambda x : True if set([NUM, NUM.lower(), NUMBER, NUMBER.lower()]).intersection(x) and not stop_words.intersection(set(x)) else False
 
-def get_ngram_matches(test_sentences, feature_scores):
+
+#####################################
+##        Extraction
+#####################################
+
+def spans2exprs(spans, line):
+  return [tuple(line[s[0]:s[1]+1]) for s in spans]
+
+# Depricated. (This function extracts patterns with assuming that one line belongs to only one cluster)
+
+def get_ngram_matches(line, feature_scores):
   # feature_scores: default_dict[ngram] = score
   ngram_length = set([len(k) for k in feature_scores.keys()])
   min_n = min(ngram_length)
   max_n = max(ngram_length)
   res_spans = []
-  for i, s in enumerate(test_sentences):
-    if type(s) == str:
-      s = s.split(' ')
-    test_sent_ngrams = common.flatten(common.get_ngram(s, min_n, max_n, vocab_condition=VOCAB_CONDITION))
-    possible_expr = list(set(feature_scores.keys()).intersection(test_sent_ngrams))
-    possible_expr = sorted([(e, feature_scores[e]) for e in possible_expr], key=lambda x:-x[1])
-    possible_expr = [e[0] for e in possible_expr]
-    spans = []
-    for expr in possible_expr:
-      new_spans = common.get_ngram_match(s, expr)
-      # Check whether the newly acquired span doesn't overlaps with the span of higher priority
-      new_spans = common.check_overlaps(spans, new_spans)
-      spans.extend(new_spans)
-    res_spans.append(spans)
-  return res_spans
+  if type(line) == str:
+    line = line.split(' ')
+  test_sent_ngrams = common.flatten(common.get_ngram(line, min_n, max_n, vocab_condition=VOCAB_CONDITION))
+  possible_expr = list(set(feature_scores.keys()).intersection(test_sent_ngrams))
+  possible_expr = sorted([(e, feature_scores[e]) for e in possible_expr], key=lambda x:-x[1])
+  possible_expr = [e[0] for e in possible_expr]
+  spans = []
 
-#####################################
+  for expr in possible_expr:
+    new_spans = common.get_ngram_match(line, expr)
+    # Check whether the newly acquired span doesn't overlaps with the span of higher priority
+    new_spans = [ns for ns in new_spans if common.no_overlaps(spans, ns)]
+    spans.extend(new_spans)
+  return spans
+
+
+def extract_around_target(line, t_idx, patterns):
+  res = []
+  for ngram, score in patterns.items():
+    min_w = max(t_idx+1-len(ngram), 0)
+    max_w = min(t_idx+1, len(line) - len(ngram))
+    for i in xrange(min_w, max_w):
+      span = (i, i+len(ngram)-1)
+      existing_spans = [s for s, _ in res]
+      if tuple(line[span[0]:span[1]+1]) == ngram and common.no_overlaps(existing_spans, span):
+        res.append((span, score))
+  return res
+
+
+########################################
+##         Evalaution
+########################################
 def exact_matching(gold, pred):
   c_gold = copy.deepcopy(gold)
   c_pred = copy.deepcopy(pred)
@@ -119,72 +144,57 @@ def ngram_matching(gold, pred, N):
   pred_ngrams = common.flatten([common.flatten(common.get_ngram(p, 1, N)) for p in pred])
   return TP, gold_ngrams, pred_ngrams
 
+def save_config(args):
+  sys.stderr.write(str(args) + '\n')
+  if not os.path.exists(args.output_dir):
+    os.makedirs(args.output_dir)
+    
+  tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup', 'test_file']
+  restored_vals = {k:v for k, v in args.__dict__.items() if k not in tmp_vals}
+  if False and os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
+    config_path = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
+    msg = "Remove the old configs? [Y/n] (%s)" 
+    common.ask_yn(msg, os.system, ('rm -r %s' % (config_path)))
+
+  #pickle.dump(restored_vals, 
+  #            open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'wb'))
+  with open(os.path.join(args.output_dir, CONFIG_NAME) + '.txt', 'w') as f:
+    for k,v in restored_vals.items():
+      type_name = re.search("<type '(.+?)'>", str(type(v))).group(1)
+      line = '%s\t%s\t%s\n' % (k,v, type_name)
+      f.write(line)
 
 
-class ClusterBase(object):
-  def __init__(self, args):
+def load_config(args):
+  if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
+    config = collections.defaultdict()
+    for l in open(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
+      k, v, type_name = l.replace('\n', '').split('\t')
+      if type_name == 'tuple':
+        config[k] = common.str2tuple(v)
+      elif type_name == 'int':
+        config[k] = int(v)
+      elif type_name == 'float':
+        config[k] = float(v)
+      else:
+        config[k] = v
+    config = common.dotDict(config)
+  else:
+    raise ValueError('No config file is found.')
+  sys.stderr.write(str(config)+'\n')
+  return config
+
+
+
+########################################
+##         Models
+########################################
+
+class ExtractBase(object):
+  def __init__(self, args, config):
     self.output_dir = args.output_dir
-    if args.mode == 'train':
-      self.config = common.dotDict(args.__dict__)
-      sys.stderr.write('Saving config...\n')
-      config = common.dotDict(args.__dict__)
-      self.save_config(args)
-    else:
-      sys.stderr.write('Loading config...\n')
-      self.config = config = self.load_config(args)
-
     self.tokenizer = word_tokenize
-    clustering_algorithm = self.config.clustering_algorithm.lower()
-    if clustering_algorithm == KMEANS_STR:
-      self.model = KMeans(n_clusters=self.config.n_clusters, random_state=0)
-    elif clustering_algorithm == DBSCAN_STR:
-      self.model = DBSCAN()
-
-    if os.path.exists(os.path.join(self.output_dir, MODEL_NAME)):
-      self.model = pickle.load(open(os.path.join(self.output_dir, MODEL_NAME), 'rb'))
-
-  def save_config(self, args):
-    sys.stderr.write(str(args) + '\n')
-    if not os.path.exists(args.output_dir):
-      os.makedirs(args.output_dir)
-
-    tmp_vals = ['output_dir', 'mode', 'debug', 'cleanup', 'test_file']
-    restored_vals = {k:v for k, v in args.__dict__.items() if k not in tmp_vals}
-    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
-      config1 = os.path.join(args.output_dir, CONFIG_NAME + '.bin')
-      config2 = os.path.join(args.output_dir, CONFIG_NAME + '.txt')
-      msg = "Remove the old configs? [Y/n] (%s)" 
-      common.ask_yn(msg, os.system, ('rm -r %s %s' % (config1, config2)))
-
-    pickle.dump(restored_vals, 
-                open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'wb'))
-    with open(os.path.join(args.output_dir, CONFIG_NAME) + '.txt', 'w') as f:
-      for k,v in restored_vals.items():
-        type_name = re.search("<type '(.+?)'>", str(type(v))).group(1)
-        line = '%s\t%s\t%s\n' % (k,v, type_name)
-        f.write(line)
-
-  def load_config(self, args):
-    if os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.bin')):
-      config = pickle.load(open(os.path.join(args.output_dir, CONFIG_NAME + '.bin'), 'rb'))
-      config = common.dotDict(config)
-      
-    elif os.path.exists(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
-      config = common.dotDict()
-      for l in open(os.path.join(args.output_dir, CONFIG_NAME + '.txt')):
-        k, v, type_name = l.replace('\n', '').split('\t')
-        if type_name == 'tuple':
-          config[k] = common.str2tuple(v)
-        elif type_name == int:
-          config[k] == int
-        elif type_name == float:
-          config[k] == float
-        else:
-          config[k] = v
-    else:
-      raise ValueError('No config file is found.')
-    sys.stderr.write(str(config)+'\n')
-    return config
+    self.config = config
 
   def evaluate(self, tests, origins, predictions, N=4, cluster_ids=None):
     try:
@@ -195,19 +205,28 @@ class ClusterBase(object):
     res_ngm = []
     for i, (t, o, pred) in enumerate(zip(tests, origins, predictions)):
       idx, sent, gold = t
-      _, o_sent, o_gold = o
-
+      _, o_sent, _ = o
+      gold = [tuple(g) for g in gold]
       TP, gold_ngrams, pred_ngrams = ngram_matching(gold, pred, N)
       res_ngm.append((len(TP), len(gold_ngrams), len(pred_ngrams)))
       TP, FP, FN = exact_matching(gold, pred)
       res_em.append((len(TP), len(TP+FN), len(TP+FP)))
-      
+
       em = 'EM_Success' if len(TP) == len(TP+FP+FN) else 'EM_Failure'
-      print '<%d (c%03d)>:\t%s' % (idx, cluster_ids[i], em)
+      if not cluster_ids:
+        cluster_id = '*'
+      elif type(cluster_ids[i]) == int:
+        cluster_id = "c%03d" % cluster_ids[i]
+      elif type(cluster_ids[i]) == list:
+        cluster_id = " ".join(["c%03d" % c for c in cluster_ids[i]])
+      else:
+        raise ValueError
+      print '<%d (%s)>:\t%s' % (idx, cluster_id, em)
       print 'Original Sent :\t', o_sent
       print 'Tokenized Sent:\t', ' '.join(sent)
       print 'Prediction    :\t', ', '.join(['\"' + ' '.join(e) + '\"' for e in pred])
       print 'Human         :\t', ', '.join(['\"' + ' '.join(g) + '\"' for g in gold])
+
 
     # Calculate precisions and recalls from the results of all lines together.
     def calc_PR(res):
@@ -227,34 +246,39 @@ class ClusterBase(object):
     print "Precision (~%d-gram):\t%.3f " % (N, precision)
     print "Recall    (~%d-gram):\t%.3f" % (N, recall)
 
+
+class ClusterBase(ExtractBase):
+  def __init__(self, args, config):
+    super(ClusterBase, self).__init__(args, config)
+    self.top_N = 5 
+    if self.config.clustering_algorithm == KMEANS_STR:
+      self.model = KMeans(n_clusters=self.config.n_clusters, random_state=0)
+    elif self.config.clustering_algorithm == DBSCAN_STR:
+      self.model = DBSCAN()
+
+    if os.path.exists(os.path.join(self.output_dir, MODEL_NAME)):
+      self.model = pickle.load(open(os.path.join(self.output_dir, MODEL_NAME), 'rb'))
+
   def get_features(self, sents):
     raise NotImplementedError
 
 
 class NGramBasedClustering(ClusterBase):
-  def __init__(self, args):
-    super(NGramBasedClustering, self).__init__(args)
+  def __init__(self, args, config):
+    super(NGramBasedClustering, self).__init__(args, config)
     vectorizers = []
     for idx, feature_type in enumerate(self.config.feature_type.split(',')):
       vectorizer = getattr(utils.features, feature_type)(
         idx, self.output_dir,
-        ngram_range=args.ngram_range, 
-        min_freq=args.min_freq,
+        ngram_range=self.config.ngram_range, 
+        min_freq=self.config.min_freq,
+        vocab_size=self.config.vocab_size,
         vocab_condition=VOCAB_CONDITION)
       vectorizers.append(vectorizer)
     self.vectorizer = utils.features.MultiVectorizerWrapper(vectorizers)
 
-  def get_features(self, sents, input_filepath=None):
-    BOW = self.vectorizer.fit_transform(sents,
-                                        input_filepath=input_filepath)
-    # sys.stderr.write('BOW matrix: %s \n' % str(BOW.shape))
-    # bow_vector_path = input_filepath + '.%dgramvec' % self.config.ngram_range[1]
-    # if args.cleanup or not os.path.exists(bow_vector_path):
-    #   sys.stderr.write('Vector file: \'%s\'\n' % bow_vector_path)
-    #   np.savetxt(bow_vector_path, BOW)
-    return BOW
-
-  def output_clusters(self, cluster_results, all_sents, all_features, top_N=5):
+  def output_training(self, indices, cluster_results, 
+                      all_lines, all_features):
     output_dir = self.output_dir
     def _feat2str(feat):
       """
@@ -264,64 +288,94 @@ class NGramBasedClustering(ClusterBase):
 
     labels = cluster_results.labels_
     n_clusters = len(set(labels))
-    sents_by_cluster = [[] for _ in xrange(n_clusters)]
+    lines_by_cluster = [[] for _ in xrange(n_clusters)]
     features_by_cluster = [[] for _ in xrange(n_clusters)]
-
-    for i, s, f in zip(labels, all_sents, all_features):
-      sents_by_cluster[i].append(s)
-      features_by_cluster[i].append(f)
-      n_elements = [len(x) for x in sents_by_cluster]
+    indices = indices if indices else [(i, '*') for i in xrange(len(all_lines))]
+    for label, (l_idx, _), f in zip(labels, indices, all_features):
+      l = all_lines[l_idx]
+      lines_by_cluster[label].append(l)
+      features_by_cluster[label].append(f)
+      n_elements = [len(x) for x in lines_by_cluster]
 
     if hasattr(cluster_results, 'cluster_centers_'):
       np.savetxt(output_dir + '/cluster.centroids', cluster_results.cluster_centers_)
     # Practically, this weighting didn't make large effects to the results.
-    def _get_weighted_freqency(feats):
+    def _get_weighted_frequency(feats):
       scores = collections.defaultdict(int)
       for k, v in common.flatten(feats):
         scores[k] += v
       return sorted([(k, v*len(k)) for k,v in scores.items()], key=lambda x: -x[1])
-      #return sorted([(k, v) for k,v in scores.items()], key=lambda x: -x[1])
-
-    sys.stderr.write("The result is output to %s.\n" % output_dir)
-    with open(output_dir + '/expressions', 'w') as f:
-      expressions = [' '.join(_get_weighted_freqency(feats)[0][0]) for feats in features_by_cluster]
-      sys.stdout = f
-      print "\n".join(set(expressions))
-      sys.stdout = sys.__stdout__
-
-    for i, (sents, feats) in enumerate(zip(sents_by_cluster, features_by_cluster)):
-      if type(sents[0]) != str:
-        sents = [' '.join(s) for s in sents]
+    for i, (lines, feats) in enumerate(zip(lines_by_cluster, features_by_cluster)):
+      if type(lines[0]) != str:
+        lines = [' '.join(s) for s in lines]
       with open(output_dir + '/c%03d.elements' % i, 'w') as f:
         sys.stdout = f
-        print "\n".join(sents)
+        print "\n".join(lines)
         sys.stdout = sys.__stdout__
 
       with open(output_dir + '/c%03d.summary' % i, 'w') as f:
         sys.stdout = f
-        print _feat2str(_get_weighted_freqency(feats)[:top_N])
+        print _feat2str(_get_weighted_frequency(feats)[:self.top_N])
         sys.stdout = sys.__stdout__
-      # with open(output_dir + '/c%03d.features' % i, 'w') as f:
-      #   sys.stdout = f
-      #   print "\n".join([_feat2str(feat) for feat in feats])
-      #   sys.stdout = sys.__stdout__
 
-    # with open(output_dir + '/cluster.info', 'w') as f:
-    #   sys.stdout = f
-    #   print common.timestamp()
-    #   print "Num of Elements:"
-    #   print " ".join([str(x) for x in n_elements])
-    #   print " "
-    #   sys.stdout = sys.__stdout__
+      with open(output_dir + '/c%03d.features' % i, 'w') as f:
+        sys.stdout = f
+        print "\n".join([_feat2str(feat) for feat in feats])
+        sys.stdout = sys.__stdout__
+    return None
 
-    # with open(output_dir + '/cluster.labels', 'w') as f:
-    #   sys.stdout = f
-    #   for l in cluster_results.labels_:
-    #     print l
-    #   sys.stdout = sys.__stdout__
+  def get_patterns_with_score(self):
+    summaries_path = commands.getoutput('ls -d %s/c*.summary' % self.output_dir)
+    feature_scores = {}
+    r = re.compile("\"(.+?)\":([0-9\.]+)")
+    for f in summaries_path.split():
+      c_idx = int(re.search('(.+)/c([0-9]+).summary', f).group(2))
+      l = open(f).readline().replace('\n', '')
+      top_n_features = [(tuple(k.split(' ')), float(v)) for k, v in r.findall(l)][:self.top_N]
+      top_n_features.append((('$', NUM), 0.1))
+      feature_scores[c_idx] = collections.defaultdict()
+      for k, v in top_n_features:
+        feature_scores[c_idx][k] = v
+    return feature_scores
+
+  def extract(self, indices, lines, cluster_ids):
+    
+    # When indices are provided the length of lines and indices can be different since indices (and cluster_ids) are assigned to each NUM token appearing in a line.
+    patterns_with_scores = self.get_patterns_with_score()
+    aligned_cluster_ids = None
+    if not indices == None:
+      # Align.
+      idx_by_line = [[] for _ in xrange(len(lines))]
+      aligned_cluster_ids = [[] for _ in xrange(len(lines))]
+      for (l_idx, t_idx), c_id in zip(indices, cluster_ids):
+        idx_by_line[l_idx].append((t_idx, c_id))
+        aligned_cluster_ids[l_idx].append(c_id)
+      predictions = []
+      for line, idxs in zip(lines, idx_by_line):
+        spans = common.flatten([extract_around_target(line, t_idx, patterns_with_scores[c_id]) for t_idx, c_id in idxs])
+        spans = sorted(spans, key=lambda x:-x[1])
+        accepted_spans = []
+        #print line
+        #print spans
+        for new_span, score in spans:
+          existing_spans = [span for span, _ in accepted_spans]
+          if common.no_overlaps(existing_spans, new_span):
+            accepted_spans.append((new_span, score))
+        accepted_spans = sorted([span for span, _ in accepted_spans], key=lambda x:x[0])
+        exprs = spans2exprs(accepted_spans, line)
+        predictions.append(exprs)
+    else:
+      predictions = []
+      for i, line in enumerate(lines):
+        c_id = cluster_ids[i]
+        exprs = spans2exprs(get_ngram_matches(line, patterns_with_scores[c_id]), 
+                            line)
+        predictions.append(exprs)
+      #predictions = [spans2exprs(get_ngram_matches(line, patterns_with_scores), line) for line in lines]
+    return predictions, aligned_cluster_ids
 
   @common.timewatch()
-  def train(self, args):
+  def train(self):
     output_dir = self.output_dir
     sents = [l.replace('\n', '') for l in open(self.config.train_file)]
     # if os.path.exists(os.path.join(output_dir, MODEL_NAME)):
@@ -329,39 +383,20 @@ class NGramBasedClustering(ClusterBase):
     #    common.ask_yn(msg, os.system, ('rm -r %s' % output_dir))
 
     sents = [self.tokenizer(l) for l in sents]
-    features = self.get_features(sents, input_filepath=self.config.train_file)
-    res = self.model.fit(features)
-    self.output_clusters(res, sents, self.vectorizer.vec2tokens(features))
+    indices, features = self.vectorizer.fit(
+      sents, input_filepath=self.config.train_file)
+    cluster_results = self.model.fit(features)
+    self.output_training(indices, cluster_results, sents, 
+                         self.vectorizer.vec2tokens(features))
     pickle.dump(self.model, open(os.path.join(output_dir, MODEL_NAME), 'wb'))
-    return res
+    return
 
   @common.timewatch()
-  def test(self, args, sents, top_N=3, test_filepath=None):
-    output_dir = self.output_dir
-    features = self.get_features(sents, input_filepath=test_filepath)
+  def test(self, lines, test_filepath=None):
+    indices, features = self.vectorizer.fit(lines, input_filepath=test_filepath)
     cluster_ids = self.model.predict(features)
+    return self.extract(indices, lines, cluster_ids)
 
-    feature_scores = {}
-    summaries_path = commands.getoutput('ls -d %s/c*.summary' % output_dir)
-    r = re.compile("\"(.+?)\":([0-9\.]+)")
-    for f in summaries_path.split():
-      c_idx = int(re.search('(.+)/c([0-9]+).summary', f).group(2))
-      l = open(f).readline().replace('\n', '')
-      top_n_features = [(tuple(k.split(' ')), float(v)) for k, v in r.findall(l)][:top_N]
-      top_n_features.append((('$', NUM), 0.1))
-      feature_scores[c_idx] = collections.defaultdict()
-      for k, v in top_n_features:
-        feature_scores[c_idx][k] = v
-
-    predictions = []
-    for i, (sent, c_idx) in enumerate(zip(sents, cluster_ids)):
-      spans = get_ngram_matches([sent], feature_scores[c_idx])[0]
-      exprs = [sent[s[0]:s[1]+1] for s in spans]
-      # ##############Replacement
-      # exprs = [" ".join(e).replace('price :', '').strip().split(' ') for e in exprs]
-      # ################
-      predictions.append(exprs)
-    return predictions, cluster_ids
 
 def split_annotations(annos, annos_pos):
   annos = [[e.strip().split(' ') if not e == NONE else [] for e in ' '.join(a).split('|')] for a in annos ]
@@ -405,44 +440,123 @@ def read_human_annotations(test_filepath, max_len=0):
   res = common.unzip((indices, sents, annos))
   return res, origins
 
-## tmp function
-def read_dplabels():
-  path = 'results/extraction/dplabel'
-  res = collections.OrderedDict()
-  for l in open(path):
-    l = l.replace('\n', '').split('\t')
-    if len([x.split() for x in l if x]) == 0:
-      continue
-    if l[0].isdigit():
-      idx, sent = l
-      idx = int(idx)
-      res[idx] = ""
+# ## tmp function: just to read chen's results
+# def read_dplabels(): 
+#   path = 'results/extraction/dplabel'
+#   res = collections.OrderedDict()
+#   for l in open(path):
+#     l = l.replace('\n', '').split('\t')
+#     if len([x.split() for x in l if x]) == 0:
+#       continue
+#     if l[0].isdigit():
+#       idx, sent = l
+#       idx = int(idx)
+#       res[idx] = ""
+#     else:
+#       label = " | ".join(l[1].strip().split('|'))
+#       res[idx] = label
+#   indices = res.keys()
+#   labels, labels_pos = tokenize_and_pos_tagging(res.values())
+#   labels, labels_pos = split_annotations(labels, labels_pos)
+#   labels, labels_pos = common.unzip([common.unzip([convert_num(a, p) for a, p in zip(label, label_pos)]) for label, label_pos in zip(labels, labels_pos)])
+
+#   assert len(indices) == len(labels)
+#   res = []
+#   for idx, l in zip(indices, labels):
+#     idx = int(idx)
+#     if (idx > 10000 and idx <= 10500) or (idx > 10750 and idx <= 11000):
+#       res.append(l)
+#   return res
+
+
+class NGramFrequency(ExtractBase):
+  def __init__(self, args, config):
+    super(self.__class__, self).__init__(args, config)
+    vectorizers = []
+    feature_type = self.config.feature_type.split(',')[0]
+    for idx, feature_type in enumerate(self.config.feature_type.split(',')):
+      self.vectorizer = getattr(utils.features, feature_type)(
+        idx, self.output_dir,
+        ngram_range=self.config.ngram_range, 
+        min_freq=self.config.min_freq,
+        vocab_condition=VOCAB_CONDITION)
+    self.vocab_path = self.output_dir + '/cluster.vocab'
+
+  def output_training(self, features):
+    counts = sorted([(k, v) for k,v in collections.Counter(common.flatten(features)).items() if not self.config.min_freq or v >= self.config.min_freq], key=lambda x:-x[1])
+    if self.config.vocab_size:
+      counts = counts[:self.config.vocab_size]
+    pickle.dump(counts, open(self.vocab_path, 'wb'))
+    with open(self.vocab_path + '.txt', 'w') as f:
+      for k,v in counts:
+        l = '%s\t%s' % (" ".join(k), str(v))
+        f.write(l)
+
+  def train(self):
+    lines = [self.tokenizer(l.replace('\n', '')) for l in open(self.config.train_file)]
+    idx, features = self.vectorizer.get_features(lines, input_filepath=self.config.train_file)
+
+    self.output_training(features)
+
+  def test(self, lines, test_filepath=None):
+    indices, features = self.vectorizer.get_features(lines, input_filepath=test_filepath)
+    return self.extract(indices, lines)
+
+  def get_patterns_with_score(self):
+    #res = collections.OrderedDict()
+    res = [(k, v + len(k) * 100000) for k, v in pickle.load(open(self.vocab_path, 'rb'))]
+    res = collections.OrderedDict(sorted(res, key=lambda x: -x[1]))
+    return res
+
+  def extract(self, indices, lines):
+    
+    # When indices are provided the length of lines and indices can be different since indices (and cluster_ids) are assigned to each NUM token appearing in a line.
+    patterns_with_scores = self.get_patterns_with_score()
+    if not indices == None:
+      # Align.
+      idx_by_line = [[] for _ in xrange(len(lines))]
+      for l_idx, t_idx in indices:
+        idx_by_line[l_idx].append(t_idx)
+      predictions = []
+      for line, idxs in zip(lines, idx_by_line):
+        spans = common.flatten([extract_around_target(line, t_idx, patterns_with_scores) for t_idx in idxs])
+        spans = sorted(spans, key=lambda x:-x[1])
+        accepted_spans = []
+        for new_span, score in spans:
+          existing_spans = [span for span, _ in accepted_spans]
+          if common.no_overlaps(existing_spans, new_span):
+            accepted_spans.append((new_span, score))
+        accepted_spans = sorted([span for span, _ in accepted_spans], key=lambda x:x[0])
+        exprs = spans2exprs(accepted_spans, line)
+        predictions.append(exprs)
     else:
-      label = " | ".join(l[1].strip().split('|'))
-      res[idx] = label
-  indices = res.keys()
-  labels, labels_pos = tokenize_and_pos_tagging(res.values())
-  labels, labels_pos = split_annotations(labels, labels_pos)
-  labels, labels_pos = common.unzip([common.unzip([convert_num(a, p) for a, p in zip(label, label_pos)]) for label, label_pos in zip(labels, labels_pos)])
+      predictions = []
+      for i, line in enumerate(lines):
+        exprs = spans2exprs(get_ngram_matches(line, patterns_with_scores), line)
+        predictions.append(exprs)
+      #predictions = [spans2exprs(get_ngram_matches(line, patterns_with_scores), line) for line in lines]
+    return predictions, None
 
-  assert len(indices) == len(labels)
-  res = []
-  for idx, l in zip(indices, labels):
-    idx = int(idx)
-    if (idx > 10000 and idx <= 10500) or (idx > 10750 and idx <= 11000):
-      res.append(l)
-  return res
-
+myself = sys.modules[__name__]
 @common.timewatch()
 def main(args):
-  model = NGramBasedClustering(args)
+  if args.mode == 'train':
+    sys.stderr.write('Saving config...\n')
+    config = common.dotDict(args.__dict__)
+    save_config(args)
+  else:
+    sys.stderr.write('Loading config...\n')
+    config = load_config(args)
+
+  model = getattr(myself, config.model_type)(args, config)
 
   if args.mode == 'train':
-    model.train(args)
+    model.train()
+    
   elif args.mode == 'test':
     tests, origins = read_human_annotations(args.test_file)
-    sentences = [sent for idx, sent, anno in tests]
-    predictions, cluster_ids = model.test(args, sentences, 
+    lines = [line for idx, line, anno in tests]
+    predictions, cluster_ids = model.test(lines, 
                                           test_filepath=args.test_file)
     model.evaluate(tests, origins, predictions, cluster_ids=cluster_ids)
   elif args.mode == 'evaluate':
@@ -452,6 +566,9 @@ def main(args):
   else:
     raise ValueError('args.mode must be \'train\' or \'test\'.')
 
+
+
+
 if __name__ == "__main__":
   random.seed(0)
   np.random.seed(0)
@@ -459,12 +576,14 @@ if __name__ == "__main__":
   parser.add_argument("output_dir")
   parser.add_argument("--train_file", default='results/candidate_sentences/corpus/all.normalized.strict.m30.0-10000', type=str, help="")
   parser.add_argument("-a", "--clustering_algorithm", default="kmeans", type=str)
-  parser.add_argument("-nr", "--ngram_range", default=(2,4),
+  parser.add_argument("-nr", "--ngram_range", default=(2,7),
                       type=common.str2tuple, help="")
   parser.add_argument("-min", "--min_freq", default=3, type=int)
   parser.add_argument("-nc", "--n_clusters", default=100, type=int)
-  #parser.add_argument("-f", "--feature_type", default='NGramVectorizer,DependencyVectorizer', type=str)
-  parser.add_argument("-f", "--feature_type", default='DependencyVectorizer', type=str)
+  parser.add_argument("-f", "--feature_type", default='NGramVectorizer', type=str)
+  #parser.add_argument("-f", "--feature_type", default='DependencyVectorizer', type=str)
+  parser.add_argument("-mt", "--model_type", default="NGramFrequency", help='[NGramFrequency|NGramBasedClustering]')
+  parser.add_argument("-v", "--vocab_size", default=0, type=int)
 
   # Variables not restored
   parser.add_argument('-m', '--mode', default='train')

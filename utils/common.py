@@ -67,7 +67,8 @@ def str2bool(v):
     return v
   return v.lower() in ("yes", "true", "t", "1")
 
-def flatten(l):
+def flatten(l, depth=1):
+  l = flatten(l, depth-1) if depth > 1 else l 
   return list(chain.from_iterable(l))
 
 
@@ -201,28 +202,25 @@ def get_ngram_match(sent, ngram):
   if type(sent) == str:
     sent = sent.split(' ')
   n = len(ngram)
-  # print sent, ngram
-  # for i in xrange(len(sent)-n+1):
-  #   print tuple(sent[i:i+n])
   indices = [(i, i+n-1) for i in xrange(len(sent)-n+1) if tuple(sent[i:i+n]) == ngram]
   return indices
 
 def get_ngram(s, min_n, max_n, vocab_condition=lambda x: True):
   return [[tuple(s[i:i+n]) for i in xrange(len(s)-n+1) if vocab_condition(s[i:i+n])] for n in xrange(min_n, max_n+1)]
 
-def check_overlaps(existing_spans, new_spans):
-  # Input : list of tuples [(int, int), ....]
-  res = []
-  for ns in new_spans:
-    check = [True if es[1] < ns[0] and ns[1] < es[0] else False for es in existing_spans]
-    if not False in check:
-      res.append(ns)
-  return res
+def no_overlaps(existing_spans, new_span):
+  # Input : list of tuple [(int, int), ....], a tuple
+  ns = new_span
+  check = [True if es[1] < ns[0] or ns[1] < es[0] else False for es in existing_spans]
+  return True if not False in check else False
 
 def tokenize_heuristics(sent):
   # for some reason nltk.tokenizer fails to separate numbers (e.g. 6.73you)
-  for m in re.findall("([0-9][0-9\,\.]*)[a-zA-Z]+",sent):
+  #for m in re.findall("([0-9][0-9\,\.]*)[a-zA-Z\.\,]+", sent):
+  for m in re.findall("([0-9][0-9\,\.]*)[a-zA-Z]+", sent):
     sent = sent.replace(m, m + ' ')
+  #for m in re.findall("[a-zA-Z\.\,]+([0-9][0-9\,\.]*)", sent):
+  #  sent = sent.replace(m, ' ' + m)
   return sent
 
 def unzip(l):

@@ -19,7 +19,11 @@ def tok_format(tok):
     return "_".join([tok.orth_, tok.tag_])
 
 def print_tree(doc):
-  return [to_nltk_tree(sent.root).pretty_print() for sent in doc.sents]
+  if type(doc) == spacy.tokens.span.Span:
+    sent = doc
+    return to_nltk_tree(sent.root).pretty_print()
+  else:
+    return [to_nltk_tree(sent.root).pretty_print() for sent in doc.sents]
 
 def to_nltk_tree(node):
     if node.n_lefts + node.n_rights > 0:
@@ -58,18 +62,21 @@ class MultiVectorizerWrapper(object):
     res = [common.flatten(t) for t in zip(*tokens)]
     return res 
 
+  def fit(self, *args, **kwargs):
+    return self.fit_transform(*args, **kwargs)
+
   def fit_transform(self, *args, **kwargs):
     features = []
     for v in self.vectorizers:
-      f = v.fit(*args, **kwargs) 
+      indices, f = v.fit(*args, **kwargs) 
       features.append(f)
     features = np.concatenate(features, axis=-1)
     #features = [v.fit(*args, **kwargs) for v in self.vectorizers]
-    return features
+    return indices, features
 
 class NGramVectorizer(Vectorizer):
   def __init__(self, idx, output_dir, ngram_range=(1,2), min_freq=0, 
-               vocab_condition=lambda x: True):
+               vocab_size=0, vocab_condition=lambda x: True):
     #super(NGramVectorizer, self).__init__()
     assert ngram_range[0] > 0 and len(ngram_range) == 2 
     assert type(min_freq) == int
@@ -86,6 +93,7 @@ class NGramVectorizer(Vectorizer):
     if idx > 0:
       self.vocab_path += '.%d' % (idx)
     self._load_vocab()
+    self.vocab_size = vocab_size
 
   def _save_vocab(self):
     if not self.vocab:
@@ -105,12 +113,14 @@ class NGramVectorizer(Vectorizer):
     min_freq = self.min_freq
     vocab = collections.Counter(common.flatten(ngrams))
     vocab = sorted([(v, vocab[v]) for v in vocab if not self.min_freq or vocab[v] >= self.min_freq], key=lambda x: -x[1])
+    if self.vocab_size:
+      vocab = vocab[:self.vocab_size]
     self.vocab = [v[0] for v in vocab]
     self.rev_vocab = collections.OrderedDict([(v, i) for i,v in enumerate(self.vocab)])
     self._save_vocab()
 
   def get_features(self, lines, input_filepath=None):
-    return [common.flatten(common.get_ngram(s, self.ngram_range[0], self.ngram_range[1], vocab_condition=self.vocab_condition)) for s in lines]
+    return None, [common.flatten(common.get_ngram(s, self.ngram_range[0], self.ngram_range[1], vocab_condition=self.vocab_condition)) for s in lines]
 
 
   def fit_transform(self, lines, input_filepath=None):
@@ -120,20 +130,20 @@ class NGramVectorizer(Vectorizer):
     if type(lines[0]) == str:
       lines = [x.split(' ') for x in lines]
 
-    feature_vectors = self.get_features(lines, input_filepath)
-
+    indices, features = self.get_features(lines, input_filepath)
     if not self.vocab:
-      self.create_vocab(feature_vectors)
+      self.create_vocab(features)
 
-    feature_vectors = [np.bincount([self.rev_vocab[t] for t in collections.Counter(fv) if t in self.rev_vocab], minlength=len(self.vocab)) for fv in feature_vectors]
+    feature_vectors = [np.bincount([self.rev_vocab[t] for t in collections.Counter(fv) if t in self.rev_vocab], minlength=len(self.vocab)) for fv in features]
 
     # normalize vectors
     feature_vectors = np.asarray([v / np.linalg.norm(v) if np.linalg.norm(v) else v for v in feature_vectors])
-    return feature_vectors
+    return indices, feature_vectors
 
   def vec2tokens(self, vectors):
     assert type(vectors) == np.ndarray and len(vectors.shape) == 2 
     return [sorted([(self.vocab[idx], v[idx]) for idx in v.nonzero()[0] if self.vocab[idx] != (NUM,)], key=lambda x: -x[1]) for v in vectors] 
+
     # assert len(vectors.shape) <= 2
     # if len(vectors.shape) == 2:
     #   return [sorted([(self.vocab[idx], v[idx]) for idx in v.nonzero()[0] if self.vocab[idx] != (NUM,)], key=lambda x: -x[1]) for v in vectors] 
@@ -191,7 +201,6 @@ class DependencyVectorizer(NGramVectorizer):
   def __init__(self, *args, **kwargs):
     super(DependencyVectorizer, self).__init__(*args, **kwargs)
 
-
   def trace(self, sent):
     def get_subtree(node):
       lefts = common.flatten([get_subtree(n) for n in node.lefts])
@@ -199,25 +208,22 @@ class DependencyVectorizer(NGramVectorizer):
       subtree = lefts + [node] + rights
       return subtree
 
-    def trace_up_from_num(num_nodes, parents, min_st=1, max_st=7):
-      # for each NUM, trace upward with getting subtrees.
-      res = [] # subtrees traced from all the numbers.
-      for num_node in num_nodes:
-        node = num_node
-        subtrees = []
-        while True:
-          st = get_subtree(node)
-          if len(st) >= min_st and len(st) <= max_st and self.vocab_condition([t.string.strip().encode('utf-8') for t in st]): 
-            subtrees.append(st)
-          if node in parents:
-            node = parents[node]
-          else:
-            break
-        res.append(subtrees)
-      res = common.flatten(res)
-      res = [tuple(st) for st in res]
-      #res = list(set(res)) #いるかな？複数のNUMから辿った時に同じsubtreeが2回入るのは変な気がする
-      #res = [tuple(" ".join([t.string.strip().encode('utf-8') for t in st]).replace(NUMBER, NUM).split(" ")) for st in res]
+    def trace_up_from_num(num_node, parents):
+      #min_st=2, max_st=7
+      min_st, max_st = self.ngram_range
+      # Starting from NUM, trace upward with getting subtrees.
+      node = num_node
+      subtrees = []
+      while True:
+        st = get_subtree(node)
+        if len(st) >= min_st and len(st) <= max_st and self.vocab_condition([t.string.strip().encode('utf-8') for t in st]): 
+          subtrees.append(st)
+        if node in parents:
+          node = parents[node]
+        else:
+          break
+      return [tuple(st) for st in subtrees]
+
       return res
 
     # Find NUM and the parent of each node.
@@ -225,26 +231,35 @@ class DependencyVectorizer(NGramVectorizer):
     num_nodes = []
     for token in sent:
       parents.update({c:token for c in token.children})
+
+    res = []
+    for i, token in enumerate(sent):
       if token.string.strip().encode('utf-8') == NUMBER: #NUMBER.decode('utf-8'):
-        num_nodes.append(token)
-    return trace_up_from_num(num_nodes, parents) if num_nodes else []
+        res.append((i, trace_up_from_num(token, parents)))
+    return res
 
   # Using only the surface of each token in the subtree.
-  def get_string_from_subtree(self, st):
+  def subtree2str(self, st):
     return tuple(" ".join([t.string.strip().encode('utf-8') for t in st]).replace(NUMBER, NUM).split(" "))
 
-  def get_features(self, lines, input_filepath):
+  def get_features(self, lines, input_filepath=None):
     docs = create_spacy(lines, input_filepath)
-    # res = []
-    # for d in docs:
-    #   subtrees = common.flatten([trace(s) for s in d.sents])
+    indices = []
     features = []
-    for d in docs:
-      feature = common.flatten([self.trace(s) for s in d.sents])
-      feature = [self.get_string_from_subtree(st) for st in feature]
-      features.append(feature)
-      #features = [common.flatten([trace(s) for s in d.sents]) for d in docs]
-    return features
+    feature_f = self.subtree2str
+    for i, d in enumerate(docs):
+      # Get features per a NUM token in a line. # [(token_idx0, subtrees0), ...]
+      offset = 0
+      feature = []
+      for s in d.sents:
+        feature.append([(offset+idx, [feature_f(st) for st in sts]) for idx, sts in self.trace(s)])
+        offset += len(s)
+      feature = common.flatten(feature)
+      idx, feature = zip(*feature) if feature else ((-1,), ([],))
+      indices += [(i, j) for j in idx]
+      features += list(feature)
+    assert len(indices) == len(features)
+    return indices, features
 
 
 class DependencyVectorizerWithPOS(DependencyVectorizer):
